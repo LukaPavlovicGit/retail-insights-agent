@@ -1,0 +1,21 @@
+question: Which categories have the highest return rates?
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-22
+sql: |
+  SELECT p.category,
+         COUNT(oi.id) AS items,
+         COUNTIF(oi.status = 'Returned') AS returned,
+         ROUND(SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(oi.id)), 3) AS return_rate,
+         ROUND(SUM(IF(oi.status = 'Returned', oi.sale_price, 0)), 2) AS returned_revenue
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 6 MONTH))
+  GROUP BY 1
+  HAVING items >= 100
+  ORDER BY return_rate DESC
+report: |
+  Return rate is returned items over all items, limited to categories with enough volume to be
+  meaningful. Report the rate and the revenue it puts at risk; a 12% rate on a small category
+  matters less than 9% on a large one. Action: Operations reviews sizing guidance and product
+  photos for the top two categories by returned revenue.

@@ -1,0 +1,22 @@
+question: Compare the performance of product X and product Y and explain why they differ.
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-15
+sql: |
+  SELECT p.name, p.brand, p.category, p.retail_price, p.cost,
+         COUNT(oi.id) AS units_sold,
+         ROUND(SUM(oi.sale_price), 2) AS revenue,
+         ROUND(SAFE_DIVIDE(SUM(oi.sale_price - p.cost), SUM(oi.sale_price)), 3) AS margin_rate,
+         ROUND(SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(oi.id)), 3) AS return_rate
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE LOWER(p.name) LIKE LOWER('%X%') OR LOWER(p.name) LIKE LOWER('%Y%')
+  GROUP BY 1, 2, 3, 4, 5
+  ORDER BY revenue DESC
+  LIMIT 20
+report: |
+  Compare on four axes: units, revenue, margin rate, and return rate. Differences usually come
+  from price point (cheaper items sell more units), return rate (fit and quality), and brand
+  pull. Say which axis explains most of the gap and whether the weaker product is a margin
+  problem or a demand problem. Action: Merchandising reviews pricing on the weaker item;
+  Operations investigates returns above 10%.

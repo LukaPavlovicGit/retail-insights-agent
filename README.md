@@ -1,0 +1,187 @@
+# Retail Insights Agent
+
+A data-analysis chat assistant for non-technical retail executives. You ask questions about
+sales, products, customers, returns and delivery in plain English. The agent writes BigQuery
+SQL over the public `bigquery-public-data.thelook_ecommerce` dataset, checks and rewrites it
+in code (SELECT only, no personal columns, limited to your product categories), runs it
+read-only, and explains the result. It can save answers as reports and delete reports after
+you confirm. It is built with LangGraph, Gemini, an MCP tool server, and SQLite with
+sqlite-vec.
+
+## Architecture
+
+- [docs/assignment.md](docs/assignment.md): the assignment brief this project answers.
+- [docs/hld.md](docs/hld.md): production architecture on Google Cloud, the flow of one
+  analysis turn, the delete confirmation flow, component choices, and non-functional notes.
+- [docs/technical-design.md](docs/technical-design.md): one section per assignment
+  requirement with the module and test that implement it, the error handling matrix, and
+  the assumptions.
+
+## Prerequisites
+
+- Python 3.12 or newer
+- [uv](https://docs.astral.sh/uv/)
+- A Google Cloud project with the BigQuery API enabled (queries against the public dataset
+  are billed to this project; the agent caps each query at 1 GB scanned)
+- The `gcloud` CLI
+- A Gemini API key from Google AI Studio
+
+## Setup
+
+```bash
+git clone https://github.com/LukaPavlovicGit/retail-insights-agent
+cd retail-insights-agent
+uv sync
+cp .env.example .env            # fill GEMINI_API_KEY and GOOGLE_CLOUD_PROJECT
+gcloud auth application-default login
+uv run ria doctor
+uv run ria init
+uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
+```
+
+- `ria doctor` checks the Gemini key, Google credentials, a BigQuery dry run, and one Gemini
+  call.
+- `ria init` loads the demo users and the 15 seed Golden Trios into `ria.db`, embeds the
+  Trio questions, caches the live BigQuery schema in `data/schema.json`, and checks that the
+  categories in `data/users.yaml` exist in the dataset. Run it again after promoting a Trio.
+- Demo users: `alice` (VP Apparel: Jeans, Pants, Shorts, Sweaters, Tops & Tees), `bob`
+  (VP Accessories: Accessories, Socks, Socks & Hosiery, Swim), `carol` (CEO, all
+  categories).
+- `ria chat --thread <id>` resumes an earlier conversation; the thread id is printed when a
+  chat starts.
+
+## Demo script
+
+Start `uv run ria chat --user alice` and type these in order:
+
+1. `What data do we have and what can I ask about?`
+   Schema answer from the cached schema; no BigQuery query.
+2. `Compare revenue of Jeans and Pants over the last 12 months.`
+   Analysis. The SQL is filtered to Alice's categories by the guard.
+3. `Why is the gap so large?`
+   Follow-up that uses the conversation so far.
+4. `Save this as a report.`
+   Saves the last analysis and queues it as a Golden Trio candidate.
+5. `Use tables from now on.`
+   Stores a preference; later analyses append the result rows as a table.
+6. `Delete the reports from this conversation.`
+   Lists the matching reports and asks for confirmation. Type `yes` to delete. Anything
+   else cancels.
+
+After each answer the CLI prints `[turn <turn_id> · <outcome>]`.
+
+## Inspecting what happened
+
+```bash
+uv run ria trace <turn_id>      # nodes, model calls, SQL attempts, guard events for one turn
+uv run ria stats                # success, refusal, error and fallback rates, repairs, latency
+uv run ria stats --since 2026-10-16T00:00:00
+```
+
+## Golden Trios
+
+```bash
+uv run ria golden list                    # all Trios with status and source
+uv run ria golden list --status pending   # candidates from saved reports
+uv run ria golden promote <id>
+uv run ria golden reject <id>
+uv run ria init                           # embeds newly added Trios
+```
+
+Only promoted Trios are retrieved as examples for SQL generation.
+
+## Evaluation
+
+```bash
+uv run ria eval                  # all 20 cases in evals/questions.yaml, live services
+uv run ria eval --only pii-request
+```
+
+Each case gets deterministic checks (intent, outcome, repairs, tables in the SQL, category
+scope, no PII patterns in the answer) and an LLM judge score from 1 to 5. Results are
+written to `evals/results-<timestamp>.json`. The command exits with 1 if any deterministic
+check fails.
+
+The run makes roughly 100 model calls on one key, so on the free tier expect 429 fallbacks
+and primary-down windows. Use `--only <case>` to run cases one at a time.
+
+## Changing the persona
+
+Edit `data/persona.md` while a chat is running. The file is read on every turn, so the next
+answer uses the new tone and instructions. No restart is needed.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+146 tests, no network or credentials needed. Model, embedding and MCP calls are replaced by
+scripted fakes.
+
+## Free-tier note
+
+Google does not publish exact free-tier limits for the Gemini API, and they are low for
+Flash models. When a call returns 429 or a 5xx error, the agent retries up to 3 times on
+the primary model (waiting 2 s, then 4 s), then switches to `gemini-3.5-flash-lite`. After
+3 failed attempts on the primary it skips the primary for 60 s. If both models fail, the
+turn ends with "The language model is unavailable right now" and the conversation
+continues. An analysis turn makes 3 to 5 model calls and 1 embedding call, so a few
+questions per minute is the practical rate on the free tier.
+
+## Assumptions
+
+1. "Products related to him" means a set of product categories per user.
+2. Churn is approximated as customers with no order in the last 90 days.
+3. Aggregated demographics (state, city, age band, gender, traffic source) may appear in
+   answers; names, email, street address, postal code and coordinates may not.
+4. A human analyst reviews Golden Trio candidates before promotion.
+5. Low concurrency for the prototype; production sizing is in the HLD.
+
+## Repository layout
+
+```
+data/
+  golden_trios/*.yaml   15 seed Trios (question, SQL, analyst report, tags)
+  persona.md            tone and instructions, read every turn
+  users.yaml            demo users and their categories
+docs/
+  hld.md                production architecture and diagrams
+  technical-design.md   per-requirement design and error matrix
+evals/
+  questions.yaml        20 evaluation cases
+src/ria/
+  cli.py                Typer commands: init, doctor, chat, trace, stats, golden, eval
+  bootstrap.py          init logic and the chat loop, testable without a terminal
+  config.py             settings from env: models, budgets, caps
+  db.py                 SQLite schema and connection with sqlite-vec loaded
+  tools.py              MCP client toolbox (stdio subprocess) and a fake for tests
+  graph/                LangGraph state, nodes, prompts, and build_graph
+  guards/               SQL guard, PII masker, schema digest
+  llm/                  Gemini client with retry and fallback; scripted fake
+  golden/               Trio loader, embedder, sqlite-vec store, retrieval
+  memory/prefs.py       preference extraction and storage
+  persona/loader.py     persona file loader
+  mcp_server/           FastMCP server, BigQuery runner with circuit breaker, report store
+  observability/        trace store, stats, trace renderer
+  evals/                eval checks and runner
+tests/                  pytest suite, offline
+```
+
+## Prototype vs design only
+
+| Area | In the prototype | Design only (see docs) |
+|---|---|---|
+| Safety and PII | SQL guard, category scope rewrite, output masker, off-topic refusal | Authorized views, DLP API pass, least-privilege service account |
+| Report deletion | Interrupt-based confirmation that survives a restart | Confirmation button in a chat UI, audit log, soft delete |
+| Resilience | Retry and fallback, call budget, repair loop, byte cap, timeout, circuit breaker | Provisioned throughput, regional failover, request queue |
+| Observability | Per-turn traces, `ria trace`, `ria stats`, optional LangSmith | Cloud Logging and Trace, alerts |
+| Golden Bucket | Seed Trios, sqlite-vec retrieval, candidate promotion commands | GCS bucket, Vertex AI Vector Search, weekly review job |
+| Learning | Regex preference memory, Trio candidates from saved reports | Eval growth from traced failures, prompt-regression runs |
+| Evaluation | 20-case eval with deterministic checks and an LLM judge | CI gate, thumbs ratings, executive review sessions |
+| Persona | `data/persona.md` hot reload | Versioned GCS object with an admin page and rollback |
+| Not built | | Web UI, real identity, charts, email delivery, web search |
+
+## Example run
+
+Transcript to be captured after `ria init` on a machine with credentials; see the demo script above.

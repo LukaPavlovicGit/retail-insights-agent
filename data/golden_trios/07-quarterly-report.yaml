@@ -1,0 +1,30 @@
+question: Create a Q1 report with insights and action items for Q2.
+tags: [all]
+author: seed-analyst
+created_at: 2026-04-02
+sql: |
+  WITH items AS (
+    SELECT oi.order_id, oi.user_id, oi.sale_price, oi.status, p.category, p.cost,
+           DATE(oi.created_at) AS d
+    FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+    JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+    WHERE DATE(oi.created_at) >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 1 QUARTER)
+      AND DATE(oi.created_at) < DATE_TRUNC(CURRENT_DATE(), QUARTER)
+  )
+  SELECT
+    ROUND(SUM(IF(status NOT IN ('Cancelled','Returned'), sale_price, 0)), 2) AS revenue,
+    COUNT(DISTINCT order_id) AS orders,
+    COUNT(DISTINCT user_id) AS customers,
+    ROUND(SAFE_DIVIDE(SUM(IF(status NOT IN ('Cancelled','Returned'), sale_price - cost, 0)),
+                      SUM(IF(status NOT IN ('Cancelled','Returned'), sale_price, 0))), 3) AS margin_rate,
+    ROUND(SAFE_DIVIDE(COUNTIF(status = 'Returned'), COUNT(*)), 3) AS return_rate,
+    ARRAY_TO_STRING(ARRAY(
+      SELECT category FROM (
+        SELECT category, SUM(sale_price) AS r FROM items GROUP BY 1 ORDER BY r DESC LIMIT 3
+      )), ', ') AS top_categories
+  FROM items
+report: |
+  A quarterly report has four parts: headline numbers (revenue, orders, customers, margin rate,
+  return rate), what changed versus the prior quarter, the three categories that mattered most,
+  and three action items for next quarter, each with an owner. Keep the headline to one
+  paragraph. Action items should be specific enough to check in 90 days.

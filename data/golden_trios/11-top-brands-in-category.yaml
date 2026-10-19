@@ -1,0 +1,20 @@
+question: Which brands lead revenue within the Jeans and Pants categories?
+tags: [Jeans, Pants]
+author: seed-analyst
+created_at: 2026-02-01
+sql: |
+  SELECT p.category, p.brand,
+         COUNT(oi.id) AS units,
+         ROUND(SUM(oi.sale_price), 2) AS revenue,
+         ROUND(SAFE_DIVIDE(SUM(oi.sale_price - p.cost), SUM(oi.sale_price)), 3) AS margin_rate
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE p.category IN ('Jeans', 'Pants')
+    AND oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH))
+  GROUP BY 1, 2
+  ORDER BY category, revenue DESC
+report: |
+  Within a category, show the top brands by revenue and their margin rate side by side. A brand
+  that leads revenue at a low margin is a negotiation target; a small brand with high margin is
+  a candidate for more shelf space. Action: Merchandising reviews the top five brands' terms.

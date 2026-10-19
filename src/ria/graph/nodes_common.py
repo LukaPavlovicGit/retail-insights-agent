@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import time
+from typing import Awaitable, Callable, Sequence
+
+from langchain_core.messages import BaseMessage
+from pydantic import BaseModel
+
+from ria.graph.deps import Deps
+from ria.llm.client import LLMResult, LLMUnavailable
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised when a turn would exceed its LLM-call budget."""
+
+
+Node = Callable[[dict], Awaitable[dict]]
+
+
+def timed(name: str, fn: Node, clock=time.perf_counter) -> Node:
+    async def wrapped(state: dict) -> dict:
+        t0 = clock()
+        try:
+            out = await fn(state)
+        except (LLMUnavailable, BudgetExceeded) as e:
+            out = {"error": f"{type(e).__name__}: {e}", "outcome": "error"}
+        out = dict(out or {})
+        out["node_timings"] = list(state.get("node_timings", [])) + [{"node": name, "ms": int((clock() - t0) * 1000)}]
+        return out
+
+    wrapped.__name__ = name
+    return wrapped
+
+
+async def call_llm(
+    deps: Deps, state: dict, *, node: str, system: str, messages: Sequence[BaseMessage],
+    schema: type[BaseModel] | None = None,
+) -> tuple[LLMResult, list[dict]]:
+    calls = list(state.get("llm_calls", []))
+    if len(calls) >= deps.settings.max_llm_calls_per_turn:
+        raise BudgetExceeded(f"turn already used {len(calls)} LLM calls")
+    res = await deps.llm.complete(system=system, messages=messages, schema=schema, node=node)
+    return res, calls + [res.ledger()]
+
+
+def window(state: dict, deps: Deps) -> list[BaseMessage]:
+    msgs = list(state.get("messages", []))
+    return msgs[-(2 * deps.settings.window_turns):]
+
+
+def scope_text(state: dict) -> str:
+    cats = state["user"].get("categories")
+    return "all product categories" if cats is None else "only these product categories: " + ", ".join(cats)
+
+
+def base_system(deps: Deps, state: dict) -> dict:
+    """Common template values for prompts."""
+    prefs = deps.prefs_store.get(state["user"]["id"])
+    summary = state.get("summary") or ""
+    return {
+        "persona": deps.persona(),
+        "user_name": state["user"]["name"],
+        "user_role": state["user"]["role"],
+        "scope": scope_text(state),
+        "prefs": prefs.summary(),
+        "prefs_obj": prefs,
+        "summary_block": f"Summary of earlier conversation: {summary}" if summary else "",
+    }
+
+
+def route_intent(state: dict) -> str:
+    return "fail" if state.get("error") else state.get("intent") or "off_topic"
+
+
+def after(ok_target: str) -> Callable[[dict], str]:
+    def _route(state: dict) -> str:
+        return "fail" if state.get("error") else ok_target
+
+    _route.__name__ = f"after_{ok_target}"
+    return _route

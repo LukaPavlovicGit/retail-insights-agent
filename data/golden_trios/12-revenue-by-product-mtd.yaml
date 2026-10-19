@@ -1,0 +1,19 @@
+question: What is our up-to-date revenue by product this month?
+tags: [all]
+author: seed-analyst
+created_at: 2026-02-03
+sql: |
+  SELECT p.name, p.category, p.brand,
+         COUNT(oi.id) AS units,
+         ROUND(SUM(oi.sale_price), 2) AS revenue_mtd
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND DATE(oi.created_at) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
+  GROUP BY 1, 2, 3
+  ORDER BY revenue_mtd DESC
+  LIMIT 25
+report: |
+  Month-to-date figures are partial; say how many days are in the period. List the top products
+  and the share of month-to-date revenue they hold. Flag any product in the top list that is a
+  new entrant compared with the usual leaders.

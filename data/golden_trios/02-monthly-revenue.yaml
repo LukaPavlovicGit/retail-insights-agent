@@ -1,0 +1,20 @@
+question: What is our monthly revenue trend for the last 12 months?
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-10
+sql: |
+  SELECT FORMAT_TIMESTAMP('%Y-%m', oi.created_at) AS month,
+         ROUND(SUM(oi.sale_price), 2) AS revenue,
+         COUNT(DISTINCT oi.order_id) AS orders,
+         ROUND(SUM(oi.sale_price) / COUNT(DISTINCT oi.order_id), 2) AS aov
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP(DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 12 MONTH))
+  GROUP BY 1
+  ORDER BY 1
+report: |
+  Revenue is reported net of cancelled and returned items. Read the trend month over month
+  and flag the current month as partial. Separate the two drivers: order count (demand) and
+  average order value (basket). When revenue moves, say which driver moved. Action items
+  follow the driver: demand drops go to Marketing, basket drops go to Merchandising.

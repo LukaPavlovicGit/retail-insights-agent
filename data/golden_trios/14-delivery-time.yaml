@@ -1,0 +1,19 @@
+question: How long does delivery take, and is it getting better or worse?
+tags: [all]
+author: seed-analyst
+created_at: 2026-02-08
+sql: |
+  SELECT FORMAT_TIMESTAMP('%Y-%m', oi.created_at) AS month,
+         p.distribution_center_id,
+         COUNT(oi.id) AS delivered_items,
+         ROUND(AVG(TIMESTAMP_DIFF(oi.delivered_at, oi.shipped_at, HOUR)) / 24, 2) AS avg_days_ship_to_deliver
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.delivered_at IS NOT NULL AND oi.shipped_at IS NOT NULL
+    AND oi.created_at >= TIMESTAMP(DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 6 MONTH))
+  GROUP BY 1, 2
+  ORDER BY 1, 2
+report: |
+  Measure ship-to-deliver in days per distribution center per month. Report the overall trend,
+  then the slowest center. Differences of more than a day between centers are worth a carrier
+  review. Action: Logistics investigates the slowest center.

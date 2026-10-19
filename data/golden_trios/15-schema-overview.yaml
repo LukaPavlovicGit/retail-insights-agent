@@ -1,0 +1,29 @@
+question: What data do we have and what questions can it answer?
+tags: [all]
+author: seed-analyst
+created_at: 2026-02-10
+sql: |
+  SELECT 'order_items' AS table_name, COUNT(*) AS rows_count,
+         MIN(DATE(oi.created_at)) AS first_day, MAX(DATE(oi.created_at)) AS last_day
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  UNION ALL
+  SELECT 'products', COUNT(DISTINCT p.id), NULL, NULL
+  FROM `bigquery-public-data.thelook_ecommerce.products` p
+  UNION ALL
+  SELECT 'orders', COUNT(DISTINCT oi.order_id), MIN(DATE(o.created_at)), MAX(DATE(o.created_at))
+  FROM `bigquery-public-data.thelook_ecommerce.orders` o
+  JOIN `bigquery-public-data.thelook_ecommerce.order_items` oi ON oi.order_id = o.order_id
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  UNION ALL
+  SELECT 'users', COUNT(DISTINCT oi.user_id), MIN(DATE(u.created_at)), MAX(DATE(u.created_at))
+  FROM `bigquery-public-data.thelook_ecommerce.users` u
+  JOIN `bigquery-public-data.thelook_ecommerce.order_items` oi ON oi.user_id = u.id
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+report: |
+  Four tables: orders (one per order), order_items (one per item sold, with price and status),
+  products (catalog with category, brand, cost and price), and users (customer demographics;
+  personal details are off limits). Together they answer questions about revenue, product and
+  category performance, customer behavior by state, age band, gender or traffic source, returns,
+  and delivery times. They cannot answer questions about marketing spend, web traffic, or
+  inventory levels.

@@ -1,0 +1,25 @@
+question: How much of our revenue comes from new versus returning customers each month?
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-25
+sql: |
+  WITH first_order AS (
+    SELECT user_id, MIN(created_at) AS first_at
+    FROM `bigquery-public-data.thelook_ecommerce.order_items`
+    GROUP BY 1
+  )
+  SELECT FORMAT_TIMESTAMP('%Y-%m', oi.created_at) AS month,
+         ROUND(SUM(IF(DATE_TRUNC(DATE(oi.created_at), MONTH) = DATE_TRUNC(DATE(f.first_at), MONTH), oi.sale_price, 0)), 2) AS new_revenue,
+         ROUND(SUM(IF(DATE_TRUNC(DATE(oi.created_at), MONTH) != DATE_TRUNC(DATE(f.first_at), MONTH), oi.sale_price, 0)), 2) AS returning_revenue
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN first_order f ON f.user_id = oi.user_id
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP(DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 12 MONTH))
+  GROUP BY 1
+  ORDER BY 1
+report: |
+  A customer is new in the month of their first purchase and returning afterwards. Report the
+  returning share; a healthy retail mix has returning revenue growing as a share over time. If
+  new revenue dominates every month, acquisition is working and retention is not. Action: CRM
+  owns the second-purchase program; Marketing owns acquisition efficiency.

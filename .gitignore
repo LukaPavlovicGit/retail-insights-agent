@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+ria.db
+ria.db-*
+traces.jsonl
+data/schema.json
+evals/results-*.json
+.pytest_cache/
+.idea/
+.vscode/
+docs/superpowers/
+dist/

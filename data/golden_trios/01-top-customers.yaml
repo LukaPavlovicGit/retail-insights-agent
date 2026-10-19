@@ -1,0 +1,23 @@
+question: Who are our top 10 customers by total spend in the last 12 months?
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-10
+sql: |
+  SELECT oi.user_id, u.state, u.traffic_source,
+         COUNT(DISTINCT oi.order_id) AS orders,
+         ROUND(SUM(oi.sale_price), 2) AS total_spend
+  FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+  JOIN `bigquery-public-data.thelook_ecommerce.users` u ON u.id = oi.user_id
+  JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+  WHERE oi.status NOT IN ('Cancelled', 'Returned')
+    AND oi.created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH))
+  GROUP BY 1, 2, 3
+  ORDER BY total_spend DESC
+  LIMIT 10
+report: |
+  Top customers are identified by customer ID only; names and contact details are never shown.
+  The top 10 together account for a small share of revenue, which is typical for this catalog:
+  spend is broad rather than concentrated. Most top spenders arrive via Search and Organic
+  traffic and place 3-6 orders in the period. Action: Marketing should build a lookalike
+  audience from the traffic source and state mix of this group rather than targeting the
+  individuals.

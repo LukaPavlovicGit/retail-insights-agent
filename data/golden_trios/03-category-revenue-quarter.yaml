@@ -1,0 +1,27 @@
+question: Which product categories drove revenue last quarter and how did they compare to the quarter before?
+tags: [all]
+author: seed-analyst
+created_at: 2026-01-12
+sql: |
+  WITH q AS (
+    SELECT p.category,
+           DATE_TRUNC(DATE(oi.created_at), QUARTER) AS quarter,
+           SUM(oi.sale_price) AS revenue
+    FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
+    JOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = oi.product_id
+    WHERE oi.status NOT IN ('Cancelled', 'Returned')
+      AND DATE(oi.created_at) >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 2 QUARTER)
+      AND DATE(oi.created_at) < DATE_TRUNC(CURRENT_DATE(), QUARTER)
+    GROUP BY 1, 2
+  )
+  SELECT category,
+         ROUND(SUM(IF(quarter = DATE_SUB(DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 1 QUARTER), revenue, 0)), 2) AS last_quarter,
+         ROUND(SUM(IF(quarter = DATE_SUB(DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 2 QUARTER), revenue, 0)), 2) AS prior_quarter
+  FROM q
+  GROUP BY 1
+  ORDER BY last_quarter DESC
+report: |
+  Rank categories by last-quarter revenue and compute the quarter-over-quarter change for each.
+  Call out the top three by revenue and the biggest movers in both directions. A category that
+  grew more than 15% deserves an inventory check; one that fell more than 15% deserves a price
+  and assortment review. Keep the list to the categories the reader owns.
