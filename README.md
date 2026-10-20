@@ -11,6 +11,7 @@ sqlite-vec.
 ## Architecture
 
 - [docs/assignment.md](docs/assignment.md): the assignment brief this project answers.
+- [docs/data-model.md](docs/data-model.md): the warehouse tables and their relationships, the agent's own store, and how each table is used.
 - [docs/hld.md](docs/hld.md): production architecture on Google Cloud, the flow of one
   analysis turn, the delete confirmation flow, component choices, and non-functional notes.
 - [docs/technical-design.md](docs/technical-design.md): one section per assignment
