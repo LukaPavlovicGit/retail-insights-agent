@@ -1,3 +1,9 @@
+"""Per-turn traces and aggregate agent metrics.
+
+`write_trace` (the last graph node) saves one `TurnTrace` per turn: timings, LLM calls, SQL attempts, guard events,
+bytes scanned. `TraceStore` writes it to SQLite (`traces` plus a per-call `llm_ledger`) and optionally appends a JSON line
+to a file. `ria trace` and `ria stats` read it back; the evals read traces to check behaviour. Depends on `ria.db` tables only.
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +15,11 @@ from pathlib import Path
 
 @dataclass
 class TurnTrace:
+    """Everything recorded about one turn. `node_timings`, `llm_calls` (ledger dicts), `sql_attempts` and
+    `guard_events` are copied from graph state. Token totals, `fallback_used` and `repairs` are derived, not stored
+    fields: `repairs` is the number of SQL attempts after the first, so guard rejections count too. The trace holds
+    SQL and metadata but not the user's question or the answer text."""
+
     turn_id: str
     thread_id: str
     user_id: str
@@ -40,12 +51,14 @@ class TurnTrace:
         return max(len(self.sql_attempts) - 1, 0)
 
     def to_dict(self) -> dict:
+        """Stored fields plus the derived totals, for the JSONL log."""
         d = asdict(self)
         d.update(tokens_in=self.tokens_in, tokens_out=self.tokens_out, fallback_used=self.fallback_used, repairs=self.repairs)
         return d
 
 
 def _percentile(values: list[int], pct: float) -> int:
+    """Nearest-rank style percentile (`pct` between 0 and 1) of a list of ints; 0 for an empty list."""
     if not values:
         return 0
     ordered = sorted(values)
@@ -54,11 +67,15 @@ def _percentile(values: list[int], pct: float) -> int:
 
 
 class TraceStore:
+    """Persist and query `TurnTrace`s. `jsonl_path`, when set (live runs), also gets one JSON line per saved turn."""
+
     def __init__(self, conn: sqlite3.Connection, jsonl_path: Path | None = None):
         self.conn = conn
         self.jsonl_path = jsonl_path
 
     def save(self, t: TurnTrace) -> None:
+        """Upsert the turn row and replace its `llm_ledger` rows, so saving the same turn id twice does not duplicate
+        ledger entries. The JSONL line is appended on every save."""
         payload = json.dumps(
             {"node_timings": t.node_timings, "llm_calls": t.llm_calls, "sql_attempts": t.sql_attempts,
              "guard_events": t.guard_events, "error": t.error}
@@ -92,10 +109,18 @@ class TraceStore:
         )
 
     def get(self, turn_id: str) -> TurnTrace | None:
+        """Load one trace by turn id, or None."""
         r = self.conn.execute("SELECT * FROM traces WHERE turn_id = ?", (turn_id,)).fetchone()
         return self._from_row(r) if r else None
 
     def stats(self, since: str | None = None) -> dict:
+        """Aggregate metrics over all turns, or those started at or after the ISO timestamp `since`.
+
+        Returns `{"turns": 0}` when empty. Otherwise rates over all turns: success (outcomes ok, saved, deleted,
+        cancelled), refusal, error (error, gave_up) and fallback-model use; `no_data` counts in none of the first
+        three. Also mean repairs (analysis turns only), guard rejections by check code, p50 and p95 latency,
+        mean tokens and BigQuery bytes per turn, and turn counts by intent.
+        """
         if since:
             rows = self.conn.execute("SELECT * FROM traces WHERE started_at >= ?", (since,)).fetchall()
         else:

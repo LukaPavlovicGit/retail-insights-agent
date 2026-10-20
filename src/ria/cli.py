@@ -1,3 +1,10 @@
+"""Typer command line for the agent: `init`, `doctor`, `chat`, `trace`, `stats`, `golden ...` and `eval`.
+
+This is the top layer. It builds `Settings`, opens the database, and wires real dependencies (Gemini, the MCP
+toolbox, the SQLite checkpointer) into the graph; the testable logic lives in `bootstrap`, `graph` and `observability`.
+Heavy or credentialed imports are done inside the commands so `ria --help` and the read-only commands start fast
+and work without API keys.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -23,10 +30,12 @@ console = Console()
 
 
 def _settings() -> Settings:
+    """Settings from the environment and `.env` (a function so commands read them at run time, not import time)."""
     return Settings.from_env()
 
 
 def _conn(settings: Settings):
+    """Open the app database and make sure the tables exist; callers close it (via `closing`) or keep it for the session."""
     conn = db.connect(settings.db_path)
     db.init_schema(conn, settings.embedding_dim)
     return conn
@@ -34,7 +43,11 @@ def _conn(settings: Settings):
 
 @app.command()
 def init() -> None:
-    """Load users and Golden Trios, embed them, cache the live schema."""
+    """Load users and Golden Trios, embed them, cache the live schema.
+
+    Needs GEMINI_API_KEY (for embeddings). BigQuery access is optional: without it the built-in schema is
+    used and the category check is reported as failed. Delegates to `bootstrap.run_init`.
+    """
     settings = _settings()
     if not settings.gemini_api_key:
         console.print("[red]GEMINI_API_KEY is not set (see .env.example).[/red]")
@@ -63,7 +76,11 @@ def init() -> None:
 
 @app.command()
 def doctor() -> None:
-    """Check the Gemini key, Google credentials, and a BigQuery dry run."""
+    """Check the Gemini key, Google credentials, and a BigQuery dry run.
+
+    Also makes one small Gemini call. Exits 0 only if every check passes. The BigQuery and Gemini checks are
+    skipped when the key or credentials are already missing.
+    """
     settings = _settings()
     ok = True
     console.print(f"GEMINI_API_KEY: {'set' if settings.gemini_api_key else '[red]missing[/red]'}")
@@ -100,7 +117,12 @@ def doctor() -> None:
 @app.command()
 def chat(user: str = typer.Option(..., "--user", "-u", help="Demo user id from data/users.yaml"),
          thread: str | None = typer.Option(None, "--thread", "-t", help="Conversation id to resume")) -> None:
-    """Start the chat loop."""
+    """Start the chat loop.
+
+    Looks up the demo user, then builds the live graph (`Deps.live`, MCP toolbox, SQLite checkpointer on the
+    same database file) and hands it to `bootstrap.chat_loop`. Passing `--thread` resumes a conversation
+    because the checkpointer stores state per thread id.
+    """
     settings = _settings()
     conn = _conn(settings)
     u = db.get_user(conn, user)
@@ -164,6 +186,7 @@ def stats(since: str | None = typer.Option(None, help="ISO timestamp lower bound
 
 @golden_app.command("list")
 def golden_list(status: str | None = typer.Option(None, help="pending | promoted | rejected")) -> None:
+    """List Golden Trios, optionally by status. User-saved reports arrive here as `pending` candidates."""
     with closing(_conn(_settings())) as conn:
         trios = TrioStore(conn).list(status=status)
     for t in trios:
@@ -172,6 +195,7 @@ def golden_list(status: str | None = typer.Option(None, help="pending | promoted
 
 @golden_app.command("promote")
 def golden_promote(trio_id: int) -> None:
+    """Mark a trio `promoted` so retrieval may use it as an example (it must also have an embedding; `ria init` adds it)."""
     with closing(_conn(_settings())) as conn:
         TrioStore(conn).set_status(trio_id, "promoted")
     console.print(f"promoted #{trio_id}; run `ria init` if it has no embedding yet")
@@ -179,6 +203,7 @@ def golden_promote(trio_id: int) -> None:
 
 @golden_app.command("reject")
 def golden_reject(trio_id: int) -> None:
+    """Mark a trio `rejected`; retrieval only returns promoted trios, so it stops being used."""
     with closing(_conn(_settings())) as conn:
         TrioStore(conn).set_status(trio_id, "rejected")
     console.print(f"rejected #{trio_id}")
@@ -187,7 +212,11 @@ def golden_reject(trio_id: int) -> None:
 @app.command("eval")
 def eval_cmd(only: str | None = typer.Option(None, help="Run a single case id"),
              cases: Path = typer.Option(Path("evals/questions.yaml"), help="Case file")) -> None:
-    """Run the evaluation set against live services (needs credentials)."""
+    """Run the evaluation set against live services (needs credentials).
+
+    Prints one row per case and exits non-zero if any case fails its deterministic checks. The LLM judge score
+    is shown but does not affect the exit code. See `ria.evals`.
+    """
     from rich.table import Table
 
     from ria.evals.checks import load_cases

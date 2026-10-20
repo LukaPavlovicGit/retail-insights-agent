@@ -1,3 +1,8 @@
+"""Eval case format and the deterministic checks applied to a turn's trace.
+
+The checks need no LLM: they compare the recorded intent, outcome, repair count and final SQL with what the case expects,
+and confirm the user's category scope appears in the SQL that ran. `evals.runner` loads cases from YAML and calls `check_case`. Depends on `observability.trace`.
+"""
 from __future__ import annotations
 
 import re
@@ -11,6 +16,10 @@ from ria.observability.trace import TurnTrace
 
 @dataclass
 class EvalCase:
+    """One scripted question for one demo `user`, with the expected `intent` and `outcome`, `tables` the final SQL
+    must reference, a `max_repairs` allowance, and `must_not_match` regexes that must not appear in the answer
+    (for example email addresses)."""
+
     id: str
     user: str
     question: str
@@ -22,6 +31,7 @@ class EvalCase:
 
 
 def load_cases(path: Path) -> list[EvalCase]:
+    """Parse a YAML list of cases; `id`, `user`, `question` and `intent` are required, the rest default (outcome "ok", one repair)."""
     raw = yaml.safe_load(Path(path).read_text()) or []
     return [EvalCase(
         id=c["id"], user=c["user"], question=c["question"], intent=c["intent"], tables=list(c.get("tables") or []),
@@ -31,6 +41,12 @@ def load_cases(path: Path) -> list[EvalCase]:
 
 
 def check_case(case: EvalCase, trace: TurnTrace, rendered: str, user_categories: list[str] | None) -> list[str]:
+    """Return a list of failure messages (empty means the case passed).
+
+    Checks intent, outcome, repairs within `max_repairs`, expected tables in the last SQL attempt, forbidden patterns
+    in `rendered`, and, for scoped users on analysis cases, a `category IN (...)` predicate containing every
+    category. The scope check is a text match on the final SQL, a backstop for the guard rather than a proof of it.
+    """
     failures: list[str] = []
     if trace.intent != case.intent:
         failures.append(f"intent: expected {case.intent}, got {trace.intent}")

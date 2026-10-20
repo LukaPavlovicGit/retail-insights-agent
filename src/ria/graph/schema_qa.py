@@ -1,3 +1,8 @@
+"""Node for "what data do you have?" questions.
+
+Answers from the schema digest only (personal columns already removed by `guards.schema.schema_digest`), so it
+makes no BigQuery call. Depends on `graph.nodes_common` and `graph.prompts.SCHEMA_SYSTEM`; reached from the router's `schema_question` intent.
+"""
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
@@ -8,6 +13,8 @@ from ria.graph.prompts import SCHEMA_SYSTEM
 
 
 def make_schema_answer(deps: Deps):
+    """Node `schema_answer`: reads `question` and the user's preferences; writes `rendered` (outcome "ok"). One LLM
+    call (`SCHEMA_SYSTEM`) grounded in `deps.schema_text`. Followed by `finalize`, or `fail` if an error is set."""
     async def schema_answer(state: dict) -> dict:
         ctx = base_system(deps, state)
         system = SCHEMA_SYSTEM.format(persona=ctx["persona"], schema_text=deps.schema_text, prefs=ctx["prefs"])

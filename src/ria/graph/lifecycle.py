@@ -1,3 +1,9 @@
+"""Nodes that run on every turn regardless of intent: start-of-turn setup, end-of-turn finalisation, memory, tracing, and failure.
+
+`begin_turn` opens the turn (and trims long history); `finalize`, `update_memory` and `write_trace` always run last,
+in that order, so every turn (including failures and refusals) is masked, learned from and traced. `fail` turns an
+error into a user-facing message. Depends on `graph.state`, `guards.pii_mask`, `memory.prefs` and `observability.trace`.
+"""
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
@@ -12,6 +18,11 @@ from ria.observability.trace import TurnTrace
 
 
 def make_begin_turn(deps: Deps):
+    """Node `begin_turn`: the first node of every turn. Resets all turn-level state via `new_turn_fields` (conversation-level
+    keys such as messages, summary and last_analysis are kept). When the history is longer than the model window
+    (`2 * window_turns` messages plus a small margin) it summarises the older messages with one LLM call
+    (`SUMMARIZE_SYSTEM`), stores the summary, and removes those messages from state. Followed by `router`, or `fail`
+    if the summary call errored."""
     async def begin_turn(state: dict) -> dict:
         msgs = list(state.get("messages", []))
         question = state.get("question") or (msgs[-1].content if msgs and isinstance(msgs[-1], HumanMessage) else "")
@@ -34,6 +45,10 @@ def make_begin_turn(deps: Deps):
 
 
 def make_finalize(deps: Deps):
+    """Node `finalize`: the single exit for every branch. Masks PII (emails, phone numbers, street addresses) in
+    `rendered` as a last line of defence, substitutes `ERROR_TEXT` if no branch produced text, appends the answer to
+    `messages` as an AI message, and, for a successful analysis, records `last_question`, `last_sql` and
+    `last_analysis` so "save this as a report" works on a later turn. No LLM call. Followed by `update_memory`."""
     async def finalize(state: dict) -> dict:
         rendered = state.get("rendered")
         outcome = state.get("outcome") or ("error" if state.get("error") else "ok")
@@ -50,6 +65,9 @@ def make_finalize(deps: Deps):
 
 
 def make_update_memory(deps: Deps):
+    """Node `update_memory`: quietly picks up formatting preferences ("use tables", "shorter") stated inside any
+    message and saves them for next time. Skipped for `preference_update` (already handled by `ack_preference`) and
+    `schema_question`. Rule-based, no LLM call, and writes no state. Followed by `write_trace`."""
     async def update_memory(state: dict) -> dict:
         if state.get("intent") in ("preference_update", "schema_question"):
             return {}
@@ -62,6 +80,9 @@ def make_update_memory(deps: Deps):
 
 
 def make_write_trace(deps: Deps):
+    """Node `write_trace`: builds a `TurnTrace` from turn-level state (intent, outcome, timings, LLM ledger, SQL
+    attempts, guard events, bytes scanned, error) and saves it through `deps.trace_store`. The last node before END;
+    it writes no state. Duration is measured from the `t0` that `begin_turn` recorded."""
     async def write_trace(state: dict) -> dict:
         trace = TurnTrace(
             turn_id=state["turn_id"], thread_id=state.get("thread_id", ""), user_id=state["user"]["id"],
@@ -78,6 +99,9 @@ def make_write_trace(deps: Deps):
 
 
 def make_fail(deps: Deps):
+    """Node `fail`: target of every edge when `state["error"]` is set. Picks a user-facing message by error text:
+    LLM-call budget exceeded, model unavailable (nothing was lost), or a generic message that quotes the turn id so
+    the trace can be found. The error string itself is kept in state for the trace. Followed by `finalize`."""
     async def fail(state: dict) -> dict:
         err = state.get("error") or "unknown error"
         if "BudgetExceeded" in err:

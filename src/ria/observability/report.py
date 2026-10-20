@@ -1,3 +1,7 @@
+"""Rich renderers for `ria trace` and `ria stats`: a trace as a tree, aggregate stats as a table.
+
+Pure presentation over `observability.trace` data; user-controlled strings (SQL, errors) are escaped so Rich does not read them as markup.
+"""
 from __future__ import annotations
 
 from rich.markup import escape
@@ -8,6 +12,8 @@ from ria.observability.trace import TurnTrace
 
 
 def render_trace(t: TurnTrace) -> Tree:
+    """One turn as a tree: header, node timings, LLM calls (tokens, latency, fallback flag), SQL attempts with their
+    results, guard events, and any error."""
     root = Tree(
         f"turn {escape(t.turn_id)}  user={escape(t.user_id)} intent={escape(str(t.intent))} "
         f"outcome={escape(t.outcome)} {t.duration_ms}ms"
@@ -35,6 +41,7 @@ def render_trace(t: TurnTrace) -> Tree:
 
 
 def render_stats(s: dict) -> Table:
+    """Format the dict from `TraceStore.stats` as a two-column table; with zero turns it shows only the turn count."""
     table = Table(title="Agent stats")
     table.add_column("metric")
     table.add_column("value")

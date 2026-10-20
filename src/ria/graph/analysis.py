@@ -1,3 +1,11 @@
+"""Nodes and edge functions for the data-question branch: retrieve examples, write SQL, guard it, run it, repair it, explain it.
+
+Pipeline: retrieve_trios -> generate_sql -> guard_sql -> execute_sql -> analyze -> render, with repair_sql and give_up
+as the failure loop. Each failed attempt is appended to `sql_attempts` with an error `kind` (guard, dry-run
+kinds such as syntax or timeout, empty, circuit_open, bytes_cap); `route_after_guard` and `route_after_execute`
+read that kind and the repair budget to choose the next node. SQL only reaches BigQuery after `guards.sql_guard`
+has rewritten it. Depends on `graph.nodes_common` (LLM calls, prompt context), `graph.prompts`, `golden.retrieve` and `deps.toolbox`.
+"""
 from __future__ import annotations
 
 import json
@@ -15,19 +23,24 @@ from ria.graph.prompts import (
 from ria.guards.sql_guard import guard_sql
 from ria.llm.client import strip_fences
 
+# Errors where another LLM rewrite cannot help (data source down, query too big): go straight to give_up.
 TERMINAL_KINDS = {"circuit_open", "bytes_cap"}
 
 
 class SqlPlan(BaseModel):
+    """Structured output for `generate_sql` and `repair_sql`: a one-sentence `plan` (not used downstream) and the `sql` text."""
+
     plan: str = ""
     sql: str
 
 
 def _attempt(sql: str, error: str | None, kind: str | None, row_count: int = 0, nbytes: int = 0) -> dict:
+    """One entry of `sql_attempts`; `error` and `kind` are both None for a successful run."""
     return {"sql": sql, "error": error, "kind": kind, "row_count": row_count, "bytes": nbytes}
 
 
 def _examples(trios: list[dict], with_sql: bool) -> str:
+    """Format retrieved Golden Trios for a prompt: with SQL for writing queries, without it for style guidance in the analysis."""
     if not trios:
         return "(none available)"
     parts = []
@@ -41,6 +54,7 @@ def _examples(trios: list[dict], with_sql: bool) -> str:
 
 
 def rows_to_markdown(rows: list[dict], limit: int = 20) -> str:
+    """Render result rows as a Markdown table (columns taken from the first row, None as blank), showing at most `limit` rows."""
     if not rows:
         return "(no rows)"
     cols = list(rows[0].keys())
@@ -53,6 +67,10 @@ def rows_to_markdown(rows: list[dict], limit: int = 20) -> str:
 
 
 def make_retrieve_trios(deps: Deps):
+    """Node `retrieve_trios`: reads `question` and the user's categories, writes `retrieved_trios` (up to 3 promoted
+    Golden Trios visible to that user, by embedding similarity). No LLM call, one embedding call. Retrieval is
+    best effort: on any error it writes an empty list and a `retrieval:failed` guard event instead of failing the
+    turn. Always followed by `generate_sql` (or `fail` if an error is set)."""
     async def retrieve(state: dict) -> dict:
         try:
             trios = await retrieve_trios(deps.trio_store, deps.embedder, state["question"], state["user"]["categories"], k=3)
@@ -64,6 +82,9 @@ def make_retrieve_trios(deps: Deps):
 
 
 def make_generate_sql(deps: Deps):
+    """Node `generate_sql`: reads the recent message window, summary, retrieved trios, user scope and schema text;
+    writes `sql` (code fences stripped). One LLM call (`SQL_SYSTEM`, structured `SqlPlan`). The scope filter is not
+    asked of the model; the guard adds it. Always followed by `guard_sql`."""
     async def generate_sql(state: dict) -> dict:
         ctx = base_system(deps, state)
         system = SQL_SYSTEM.format(
@@ -78,6 +99,10 @@ def make_generate_sql(deps: Deps):
 
 
 def make_guard_sql(deps: Deps):
+    """Node `guard_sql`: reads `sql`, writes the rewritten `sql`, `guard_events`, and on failure `sql_error`,
+    `sql_error_kind` and a new `sql_attempts` entry. First runs the static `guard_sql` checks, then a BigQuery
+    dry run through the toolbox (syntax and byte-cap check without cost). No LLM call. A static rejection has kind
+    "guard"; a dry-run rejection carries the runner's `error_kind`. Next node is chosen by `route_after_guard`."""
     async def guard(state: dict) -> dict:
         sql = state.get("sql") or ""
         events = list(state.get("guard_events", []))
@@ -101,6 +126,9 @@ def make_guard_sql(deps: Deps):
 
 
 def make_execute_sql(deps: Deps):
+    """Node `execute_sql`: runs the guarded `sql` with `bq_query` and writes `result_rows`, `result_bytes` and a
+    `sql_attempts` entry. A query that succeeds but returns zero rows is recorded as kind "empty" so it can be
+    repaired once (filters may be too strict) rather than analysed. No LLM call. Next node is chosen by `route_after_execute`."""
     async def execute_sql(state: dict) -> dict:
         sql = state["sql"]
         attempts = list(state.get("sql_attempts", []))
@@ -121,10 +149,13 @@ def make_execute_sql(deps: Deps):
 
 
 def _can_repair(state: dict, max_repairs: int) -> bool:
+    """True while fewer than `max_repairs` repair rewrites have been used this turn."""
     return int(state.get("repairs", 0)) < max_repairs
 
 
 def route_after_guard(state: dict, max_repairs: int = 2) -> str:
+    """Edge after `guard_sql`: error set -> fail; no SQL error -> execute_sql; terminal kind (circuit_open,
+    bytes_cap) -> give_up; any other error -> repair_sql while the repair budget lasts, else give_up."""
     if state.get("error"):
         return "fail"
     kind = state.get("sql_error_kind")
@@ -136,6 +167,8 @@ def route_after_guard(state: dict, max_repairs: int = 2) -> str:
 
 
 def route_after_execute(state: dict, max_repairs: int = 2) -> str:
+    """Edge after `execute_sql`: error set -> fail; success -> analyze; terminal kind -> give_up; a second "empty"
+    result -> give_up (an empty answer gets one retry only); any other error -> repair_sql while budget lasts, else give_up."""
     if state.get("error"):
         return "fail"
     kind = state.get("sql_error_kind")
@@ -151,6 +184,9 @@ def route_after_execute(state: dict, max_repairs: int = 2) -> str:
 
 
 def make_repair_sql(deps: Deps):
+    """Node `repair_sql`: reads every entry in `sql_attempts` (SQL plus its error or row count) and the original
+    question; writes a new `sql`, increments `repairs`, and clears the error fields. One LLM call (`REPAIR_SYSTEM`,
+    structured `SqlPlan`). The new SQL goes back through `guard_sql`, never straight to BigQuery."""
     async def repair_sql(state: dict) -> dict:
         ctx = base_system(deps, state)
         blocks = []
@@ -169,6 +205,10 @@ def make_repair_sql(deps: Deps):
 
 
 def make_give_up(deps: Deps):
+    """Node `give_up`: reads `sql_error_kind` and `sql_attempts`, writes a canned `rendered` message and `outcome`.
+    Empty result -> "no_data" (scope-aware text); circuit_open -> "error"; bytes_cap -> "gave_up" with the cap
+    detail; anything else -> "gave_up" listing each attempt's error. No LLM call, so it works when the model or
+    warehouse is struggling. Always followed by `finalize`."""
     async def give_up(state: dict) -> dict:
         kind = state.get("sql_error_kind")
         attempts = state.get("sql_attempts", [])
@@ -190,6 +230,9 @@ def make_give_up(deps: Deps):
 
 
 def make_analyze(deps: Deps):
+    """Node `analyze`: reads `result_rows` (first 50, as JSON), `sql`, the question, the user's preferences and
+    retrieved trios (for style only, without their SQL); writes `analysis`, the model's written interpretation.
+    One LLM call (`ANALYZE_SYSTEM`), with depth and format taken from the user's stored preferences. Always followed by `render`."""
     async def analyze(state: dict) -> dict:
         ctx = base_system(deps, state)
         prefs = ctx["prefs_obj"]
@@ -209,6 +252,9 @@ def make_analyze(deps: Deps):
 
 
 def make_render(deps: Deps):
+    """Node `render`: builds the final `rendered` text from `analysis`, appending a Markdown table when the user's
+    format is "table" and the SQL when their depth is "deep". Preferences are read fresh from the store, so a
+    change made earlier in the same conversation applies. No LLM call. Always followed by `finalize`."""
     async def render(state: dict) -> dict:
         prefs = deps.prefs_store.get(state["user"]["id"])
         parts = [state.get("analysis") or ""]

@@ -1,3 +1,19 @@
+"""Prompt templates and canned replies for the graph, kept in one file so wording changes do not touch node logic.
+
+Used by node:
+- ROUTER_SYSTEM: `router`.
+- SUMMARIZE_SYSTEM: `begin_turn` (history summary).
+- SCHEMA_SYSTEM: `schema_answer`.
+- SQL_SYSTEM: `generate_sql`.
+- REPAIR_SYSTEM: `repair_sql`.
+- ANALYZE_SYSTEM, DEPTH_INSTRUCTIONS, FORMAT_INSTRUCTIONS: `analyze` (the two dicts are keyed by the user's stored depth and format).
+- TITLE_SYSTEM: `save_report`.
+- REFUSAL_TEXT: `refuse`.
+- ERROR_TEXT: `finalize` and `fail`.
+- NO_DATA_TEXT, NO_DATA_TEXT_UNSCOPED, GAVE_UP_TEXT, DATA_SOURCE_DOWN_TEXT, QUERY_TOO_LARGE_TEXT: `give_up`.
+The *_SYSTEM strings are `str.format` templates, so literal braces in them must be doubled.
+"""
+
 ROUTER_SYSTEM = """{persona}
 
 You are the request router for a retail data-analysis assistant used by executives.

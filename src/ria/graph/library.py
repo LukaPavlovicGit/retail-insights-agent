@@ -1,3 +1,10 @@
+"""Nodes for the saved-reports branch: save the last analysis, and delete reports after the user confirms.
+
+Reports live in the MCP server's SQLite library, reached only through `deps.toolbox`; every call is scoped to the
+current user id. Saving also queues the analysis as a pending Golden Trio candidate for analyst review. Deleting is
+a two-step flow (`resolve_targets` finds matches, `confirm_delete` pauses on a LangGraph `interrupt`) so nothing is
+deleted without an explicit yes. Depends on `graph.nodes_common`, `graph.prompts.TITLE_SYSTEM`, `guards.pii_mask` and `golden`.
+"""
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
@@ -12,11 +19,18 @@ from ria.guards.pii_mask import mask_pii
 
 
 class ReportMeta(BaseModel):
+    """Structured output of the titling call: a short `title` and 1 to 3 lowercase `tags` for a saved report."""
+
     title: str
     tags: list[str] = Field(default_factory=list)
 
 
 def make_save_report(deps: Deps):
+    """Node `save_report`: reads `last_analysis`, `last_question` and `last_sql` (set by `finalize` after the last
+    successful analysis); writes `rendered` and `outcome` "saved". One LLM call (`TITLE_SYSTEM`, structured
+    `ReportMeta`) for title and tags, then `reports_save` through the toolbox and a `pending` Golden Trio insert
+    tagged with the user's categories. The analysis is PII-masked before it is stored. With nothing to save it
+    replies with guidance and makes no calls. Always followed by `finalize` (or `fail`)."""
     async def save_report(state: dict) -> dict:
         analysis = state.get("last_analysis")
         if not analysis:
@@ -46,6 +60,10 @@ def make_save_report(deps: Deps):
 
 
 def make_resolve_targets(deps: Deps):
+    """Node `resolve_targets`: turns the router's `report_filter_scope` ("conversation", "text" with
+    `report_filter_text`, or "all") into a `reports_search` for this user and writes `pending_delete` (id, title,
+    created_at per report). If the scope is unclear or nothing matches it writes a `rendered` reply instead, so no
+    confirmation is requested. No LLM call. Next node is chosen by `route_after_resolve`."""
     async def resolve_targets(state: dict) -> dict:
         user_id = state["user"]["id"]
         scope = state.get("report_filter_scope")
@@ -71,12 +89,19 @@ def make_resolve_targets(deps: Deps):
 
 
 def route_after_resolve(state: dict) -> str:
+    """Edge after `resolve_targets`: error set -> fail; reports found -> confirm_delete; otherwise -> finalize
+    (the node already wrote the reply)."""
     if state.get("error"):
         return "fail"
     return "confirm_delete" if state.get("pending_delete") else "finalize"
 
 
 def make_confirm_delete(deps: Deps):
+    """Node `confirm_delete`: pauses the turn with `interrupt({"action": "delete_reports", "reports": [...]})` and
+    waits for a resume value like `{"confirmed": True}`. Anything other than a dict with a truthy `confirmed`
+    cancels. On yes it calls `reports_delete` with the listed ids (the server also filters by user id) and writes
+    `rendered` with the count; on no it deletes nothing. Because `interrupt` re-runs this node from the top on
+    resume, it must stay free of side effects before the interrupt call. Always followed by `finalize`."""
     async def confirm_delete(state: dict) -> dict:
         pending = state.get("pending_delete") or []
         answer = interrupt({"action": "delete_reports", "reports": pending})

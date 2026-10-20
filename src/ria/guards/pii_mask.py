@@ -1,3 +1,9 @@
+"""Regex masking of emails, street addresses and phone numbers in text.
+
+This is the last line of defence for personal data: `graph.lifecycle.finalize` masks every reply, and `save_report` masks an
+analysis before storing it. The primary protection is upstream (the SQL guard blocks personal columns), so these
+patterns are tuned to avoid false positives on ordinary numbers such as IDs and SKUs. No dependencies on the rest of the package.
+"""
 from __future__ import annotations
 
 import re
@@ -23,6 +29,7 @@ _RULES = [(EMAIL, "[email]"), (ADDRESS, "[address]"), (PHONE, "[phone]")]
 
 
 def mask_pii(text: str) -> tuple[str, int]:
+    """Replace emails, addresses and phone numbers with `[email]`, `[address]` and `[phone]`; returns the masked text and the number of replacements."""
     total = 0
     for pattern, token in _RULES:
         text, n = pattern.subn(token, text)

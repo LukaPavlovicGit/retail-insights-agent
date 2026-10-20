@@ -1,3 +1,9 @@
+"""State schema for the turn graph.
+
+`AgentState` is what LangGraph checkpoints per thread. Conversation-level keys persist across turns; turn-level keys are
+reset by `begin_turn` through `new_turn_fields`. Nodes return partial dicts of these keys, and edge functions
+read them (mostly `error`, `intent`, `sql_error_kind`, `repairs`, `pending_delete`). Has no dependencies on the rest of the package.
+"""
 from __future__ import annotations
 
 from typing import Annotated, TypedDict
@@ -7,6 +13,9 @@ from langgraph.graph.message import add_messages
 
 
 class UserCtx(TypedDict):
+    """The signed-in demo user, as returned by `db.get_user`. `categories` is the allowed product-category scope,
+    or None for an unrestricted user. The SQL guard enforces it; prompts only describe it."""
+
     id: str
     name: str
     role: str
@@ -14,6 +23,11 @@ class UserCtx(TypedDict):
 
 
 class AgentState(TypedDict, total=False):
+    """Full graph state (all keys optional; read with `.get`). `messages` uses LangGraph's `add_messages` reducer, so
+    returned messages are appended, and `RemoveMessage` entries delete older ones. `last_*` hold the most recent
+    successful analysis for "save this as a report". `sql_attempts` entries are `{sql, error, kind, row_count, bytes}`;
+    `llm_calls` entries are `LLMResult.ledger()` dicts; `error` being set sends the turn to `fail`."""
+
     # conversation-level (survive across turns)
     user: UserCtx
     thread_id: str
@@ -50,6 +64,7 @@ class AgentState(TypedDict, total=False):
 
 
 def new_turn_fields(turn_id: str, question: str, started_at: str, t0: float) -> dict:
+    """Fresh values for every turn-level key, so nothing from the previous turn (SQL, errors, repairs, rendered text) leaks into this one."""
     return {
         "turn_id": turn_id, "started_at": started_at, "t0": t0, "question": question,
         "intent": "", "router_reason": "", "report_filter_scope": None, "report_filter_text": None,

@@ -1,3 +1,10 @@
+"""SQLite schema, connection setup and user records for the whole app.
+
+One database file holds users, saved reports, Golden Trios (plus the `trio_vec` sqlite-vec index), per-user
+preferences, turn traces and the LLM ledger. The LangGraph checkpointer in `cli.chat` uses the same file for its own tables.
+Both the agent process and the MCP server process open this file (WAL mode), each through `connect`.
+Depends only on sqlite-vec and PyYAML; the stores in `golden`, `memory`, `observability` and `mcp_server` build on it.
+"""
 from __future__ import annotations
 
 import json
@@ -35,6 +42,11 @@ CREATE TABLE IF NOT EXISTS llm_ledger (
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
+    """Open the app database with dict-like rows and the sqlite-vec extension loaded.
+
+    `check_same_thread=False` because async code may touch the connection from different threads. WAL is enabled
+    for file databases so the agent and the MCP server can share the file; `:memory:` (tests) skips it.
+    """
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     if str(path) != ":memory:":
@@ -46,6 +58,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection, embedding_dim: int) -> None:
+    """Create the tables and the `trio_vec` cosine-distance vector table if missing (idempotent).
+
+    `embedding_dim` is baked into the vector table at creation, so it must match `Settings.embedding_dim`
+    and the embedder; changing it later needs a new database.
+    """
     conn.executescript(DDL)
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS trio_vec USING vec0("
@@ -65,6 +82,11 @@ def _row_to_user(row: sqlite3.Row) -> dict:
 
 
 def load_users(conn: sqlite3.Connection, path: Path) -> list[dict]:
+    """Upsert the demo users from users.yaml and return them as user dicts.
+
+    Each entry needs id, name, role and categories, otherwise `ValueError`. `categories: ["*"]` means
+    unrestricted and comes back as `None`; any other list is the user's product-category scope.
+    """
     raw = yaml.safe_load(Path(path).read_text()) or []
     for u in raw:
         for key in ("id", "name", "role", "categories"):
@@ -79,5 +101,8 @@ def load_users(conn: sqlite3.Connection, path: Path) -> list[dict]:
 
 
 def get_user(conn: sqlite3.Connection, user_id: str) -> dict | None:
+    """Return `{id, name, role, categories}` (categories `None` = unrestricted), or `None` for an unknown id.
+
+    This dict is the `UserCtx` that the graph carries in state and the SQL guard uses for scoping."""
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return _row_to_user(row) if row else None

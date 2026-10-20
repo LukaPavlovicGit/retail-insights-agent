@@ -1,3 +1,9 @@
+"""Runtime settings for the agent, read once from the environment (and an optional .env file).
+
+`Settings` is the single place for model names, BigQuery limits, retry and call budgets, and data file locations.
+It is passed into `graph.deps.Deps`, the CLI, the MCP server launcher and the evals; nothing else reads env vars
+(the MCP server child process is the one exception, and it gets its values from `tools.open_mcp_toolbox`).
+"""
 from __future__ import annotations
 
 import os
@@ -9,6 +15,14 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Settings:
+    """Immutable configuration with defaults for local development.
+
+    Limits: `bq_max_bytes` caps bytes scanned per query, `bq_timeout_s` the BigQuery wait, `row_cap` the rows
+    returned and the LIMIT the guard enforces, `max_repairs` the SQL repair rounds per turn,
+    `max_llm_calls_per_turn` the LLM budget per turn, `window_turns` how many recent turns go to the model
+    before older ones are summarised. `embedding_dim` must match the vector table created by `db.init_schema`.
+    """
+
     gemini_api_key: str | None = None
     gcp_project: str | None = None
     primary_model: str = "gemini-3.8-flash"
@@ -27,6 +41,11 @@ class Settings:
 
     @classmethod
     def from_env(cls, env_file: str | None = ".env") -> "Settings":
+        """Build settings from env vars, loading `env_file` first without overriding variables already set.
+
+        Only the keys, model names, db path, data dir and byte cap are overridable from the environment;
+        the other limits keep their class defaults.
+        """
         if env_file:
             load_dotenv(env_file, override=False)
         g = os.environ.get

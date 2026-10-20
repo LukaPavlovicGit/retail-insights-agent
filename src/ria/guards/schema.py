@@ -1,3 +1,9 @@
+"""What the assistant knows about the dataset: table schemas, which columns are personal data, and the prompt-ready digest.
+
+`STATIC_SCHEMA` is the built-in copy of the four thelook_ecommerce tables the app may use; `ria init` can replace it
+with a live copy cached in schema.json. The SQL guard uses the schema to resolve columns and the PII list to block
+personal fields; `graph.deps` uses the digest as the schema description in prompts. No dependencies on the rest of the package.
+"""
 from __future__ import annotations
 
 import json
@@ -41,11 +47,14 @@ TABLE_NOTES = {
 
 
 def qualify_schema(dataset: str, schema: dict | None = None) -> dict:
+    """Nest `schema` as `{project: {dataset: {table: columns}}}`, the shape sqlglot's `qualify` needs for fully qualified table names."""
     catalog, db = dataset.split(".")
     return {catalog: {db: dict(schema or STATIC_SCHEMA)}}
 
 
 def schema_digest(schema: dict | None = None, dataset: str = "bigquery-public-data.thelook_ecommerce") -> str:
+    """Describe the tables, columns, join keys and table notes as text for prompts. Personal columns on `users`
+    are left out, so the model is never shown them (the SQL guard blocks them as well, in case it guesses)."""
     schema = schema or STATIC_SCHEMA
     lines = [f"Dataset: `{dataset}` (always use fully qualified table names)."]
     for table, cols in schema.items():
@@ -57,6 +66,8 @@ def schema_digest(schema: dict | None = None, dataset: str = "bigquery-public-da
 
 
 def load_schema(path: Path) -> dict:
+    """Load the cached live schema from `path`, or return `STATIC_SCHEMA` if the file is missing, not valid JSON,
+    or lacks any of the required tables. A bad cache falls back silently rather than blocking startup."""
     p = Path(path)
     if p.exists():
         try:

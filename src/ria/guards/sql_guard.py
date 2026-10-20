@@ -1,3 +1,11 @@
+"""Parse the model's SQL into an AST and enforce the safety rules in code, never in the prompt.
+
+Rules, in order: exactly one SELECT (or set operation); only tables from the allowed dataset and schema; columns
+resolved against the schema; no personal columns on `users`, including whole-row references such as `SELECT u`;
+per-user category scope injected into every SELECT that reads products or order_items; a row cap. The graph's `guard_sql` node calls
+`guard_sql` before every BigQuery dry run, so the model is never trusted to enforce any of this itself.
+Depends on sqlglot and `guards.schema`; it does no I/O.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,6 +28,10 @@ SCOPE_REASON = (
 
 @dataclass
 class GuardResult:
+    """Outcome of `guard_sql`. When `ok`, `sql` is the rewritten, safe-to-run BigQuery SQL and `reason` is None. When
+    rejected, `sql` is None and `reason` is a message the repair prompt can act on. `events` lists the checks
+    that ran (`code:ok`, `code:rejected`, `scope:injected`, `limit:clamped` and so on) and ends up in the trace."""
+
     ok: bool
     sql: str | None
     events: list[str] = field(default_factory=list)
@@ -43,6 +55,13 @@ def guard_sql(
     row_cap: int = 200,
     schema: dict | None = None,
 ) -> GuardResult:
+    """Validate and rewrite `sql`; returns a `GuardResult` and never raises on bad SQL.
+
+    `categories` is the user's scope: a list means every SELECT over products or order_items is filtered to those
+    categories (an inner join to products is added through order_items when the SELECT has none; a SELECT whose
+    tables include neither is rejected, as is a query where nothing could be scoped), while None means unrestricted. `dataset` is `project.dataset`. `schema` defaults to the static
+    schema. The LIMIT is added if missing and clamped to `row_cap` if larger or not a plain number.
+    """
     events: list[str] = []
 
     def reject(code: str, reason: str) -> GuardResult:

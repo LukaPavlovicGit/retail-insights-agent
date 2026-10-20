@@ -1,3 +1,9 @@
+"""Per-user answer preferences (format, depth, charts) learned from what the user says, and their storage.
+
+`extract_preferences` reads phrases like "use tables" or "shorter" with plain regexes (no LLM); `PrefsStore` applies the
+changes and persists them in `user_prefs`. The graph reads preferences to shape prompts and rendering, and writes them
+from `ack_preference` and `update_memory`. Preferences are per user, not per thread, so they carry over between chats.
+"""
 from __future__ import annotations
 
 import re
@@ -11,6 +17,10 @@ FORMATS = {"table", "bullets", "prose"}
 
 @dataclass
 class Prefs:
+    """One user's settings. `format` is table, bullets or prose; `depth` is brief, standard or deep; `charts` is
+    stored and shown in the summary but nothing renders charts yet. `brevity_streak` counts consecutive
+    "shorter" requests; at three, depth drops one step. `notes` is stored but not currently written anywhere."""
+
     format: str = "prose"
     depth: str = "standard"
     charts: bool = False
@@ -18,6 +28,7 @@ class Prefs:
     brevity_streak: int = 0
 
     def summary(self) -> str:
+        """One-line description used in prompts and in the acknowledgement shown to the user."""
         return f"Format: {self.format}. Depth: {self.depth}. Charts: {'yes' if self.charts else 'no'}."
 
 
@@ -36,6 +47,10 @@ _CHARTS_YES = re.compile(
 
 
 def extract_preferences(text: str) -> dict:
+    """Pull preference changes out of a message. Returns a dict with any of `format` (table, bullets, prose; first
+    match wins), `brevity` (True), `depth_up` (True), `charts` (True or False; a "no charts" phrase beats a "charts" one).
+    Empty dict when nothing matches. Patterns are deliberately narrow (for example "chart of ..." is a data
+    request, not a preference), and a miss simply leaves preferences unchanged."""
     out: dict = {}
     for pattern, fmt in _FORMAT_PATTERNS:
         if pattern.search(text):
@@ -53,16 +68,20 @@ def extract_preferences(text: str) -> dict:
 
 
 class PrefsStore:
+    """SQLite-backed `Prefs` per user id. Created by `Deps`."""
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
     def get(self, user_id: str) -> Prefs:
+        """Stored preferences, or the defaults for a user with no row."""
         r = self.conn.execute("SELECT * FROM user_prefs WHERE user_id = ?", (user_id,)).fetchone()
         if not r:
             return Prefs()
         return Prefs(r["format"], r["depth"], bool(r["charts"]), r["notes"], r["brevity_streak"])
 
     def save(self, user_id: str, p: Prefs) -> None:
+        """Upsert the full preferences row and stamp `updated_at`."""
         self.conn.execute(
             "INSERT OR REPLACE INTO user_prefs (user_id, format, depth, charts, notes, brevity_streak, updated_at) "
             "VALUES (?,?,?,?,?,?,?)",
@@ -72,6 +91,12 @@ class PrefsStore:
         self.conn.commit()
 
     def apply(self, user_id: str, changes: dict) -> tuple[Prefs, bool]:
+        """Apply the dict from `extract_preferences`; returns `(new_prefs, changed)` and saves only if something changed.
+
+        `depth_up` raises depth one step and resets the brevity streak. `brevity` adds to the streak, and the
+        third consecutive one lowers depth one step and resets it. Note that `changed` is True whenever the streak
+        moves, even if the visible settings stay the same.
+        """
         old = self.get(user_id)
         new = replace(old)
         if changes.get("format") in FORMATS:

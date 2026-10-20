@@ -1,4 +1,10 @@
-"""FastMCP stdio server exposing BigQuery (read-only) and the saved-reports library."""
+"""FastMCP stdio server exposing BigQuery (read-only) and the saved-reports library.
+
+Run as `python -m ria.mcp_server.server`; the agent starts it as a child process through `ria.tools.open_mcp_toolbox`
+and talks to it over stdio. It is the only code that touches BigQuery or the `reports` table at runtime. It
+trusts its caller: SQL must already have passed `guards.sql_guard`, because this layer only adds byte caps and
+a row cap. Configuration comes from environment variables set by the launcher. Tools return JSON strings.
+"""
 from __future__ import annotations
 
 import json
@@ -18,6 +24,7 @@ _store: ReportStore | None = None
 
 
 def reset() -> None:
+    """Close the report database and drop the cached runner and store, so the next call rebuilds them from the current environment (used by tests)."""
     global _runner, _store
     if _store is not None:
         _store.conn.close()
@@ -25,6 +32,9 @@ def reset() -> None:
 
 
 def runner() -> BigQueryRunner:
+    """The process-wide `BigQueryRunner`, created on first use from the RIA_* and GOOGLE_CLOUD_PROJECT env vars.
+    Lazy so the server starts, and `ria` works for non-BigQuery tools, before credentials are needed. One runner
+    means one circuit breaker shared by all tool calls."""
     global _runner
     if _runner is None:
         _runner = BigQueryRunner(
@@ -38,6 +48,7 @@ def runner() -> BigQueryRunner:
 
 
 def store() -> ReportStore:
+    """The process-wide `ReportStore`, opened lazily on RIA_DB_PATH, the same database file the agent uses (separate connection, WAL mode)."""
     global _store
     if _store is None:
         conn = db.connect(os.environ.get("RIA_DB_PATH", "ria.db"))
@@ -60,7 +71,9 @@ def bq_query(sql: str) -> str:
 
 @mcp.tool()
 def bq_schema() -> str:
-    """Column names and types for orders, order_items, products, users."""
+    """Column names and types for orders, order_items, products, users.
+
+    Returns the live schema (`source: "live"`), or the built-in one with a `warning` (`source: "static"`) if BigQuery cannot be reached."""
     try:
         return json.dumps({"source": "live", "schema": runner().live_schema()})
     except Exception as e:  # noqa: BLE001 - no credentials or network: fall back
@@ -88,6 +101,7 @@ def reports_delete(user_id: str, ids: list[int]) -> str:
 
 
 def main() -> None:
+    """Serve the tools over stdio until the parent process closes the pipe."""
     mcp.run(transport="stdio")
 
 

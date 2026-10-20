@@ -1,3 +1,9 @@
+"""Text embeddings for Golden Trio retrieval.
+
+`Embedder` is the interface; `GeminiEmbedder` calls the Gemini embedding API and `FakeEmbedder` is a deterministic
+offline stand-in for tests. Questions are embedded as "query" and stored trios as "document", the task types the
+Gemini model is trained for. Used by `ria init` (documents), `golden.retrieve` (queries) and `graph.deps`.
+"""
 from __future__ import annotations
 
 import math
@@ -11,6 +17,9 @@ Kind = Literal["query", "document"]
 
 
 class Embedder(Protocol):
+    """Turns text into fixed-length float vectors of length `dim`. `kind` selects the task type ("query" for user
+    questions, "document" for stored trios). Implementations: `GeminiEmbedder` (real) and `FakeEmbedder` (tests)."""
+
     dim: int
 
     async def embed_many(self, texts: list[str], kind: Kind = "document") -> list[list[float]]: ...
@@ -19,6 +28,9 @@ class Embedder(Protocol):
 
 
 class GeminiEmbedder:
+    """Embedder over `settings.embedding_model`, truncated to `settings.embedding_dim` dimensions so the vectors
+    fit the `trio_vec` table. Needs `settings.gemini_api_key`; the SDK is imported when constructed."""
+
     def __init__(self, settings: Settings):
         from google import genai
 

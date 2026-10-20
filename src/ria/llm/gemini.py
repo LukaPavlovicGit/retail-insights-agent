@@ -1,3 +1,11 @@
+"""Gemini implementation of `LLMClient` with retries, a fallback model, and a short "primary is down" memory.
+
+Each call tries the primary model up to `retries` times with exponential backoff on retryable errors (429, 5xx,
+timeouts), then the fallback model. A non-retryable error (for example a 400) moves straight on to the next
+model; a structured-output parse failure is retried without a pause. Neither counts as an outage. The primary is skipped for `down_for_s`
+seconds only after its whole retry budget was spent on retryable errors, so one bad request cannot take it offline.
+Depends on `ria.config` and `llm.client`; the LangChain Gemini SDK is imported lazily so tests can inject fake models.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +26,7 @@ _RETRYABLE = re.compile(
 
 
 def is_retryable(exc: Exception) -> bool:
+    """True for rate limits, server errors and timeouts, judged by status code first and then by the error text (SDK exceptions are inconsistent)."""
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     if code in (429, 500, 503, 504):
         return True
@@ -25,11 +34,13 @@ def is_retryable(exc: Exception) -> bool:
 
 
 def _usage(msg: Any) -> tuple[int, int]:
+    """(input_tokens, output_tokens) from a message's usage metadata, 0 when the provider did not report it."""
     meta = getattr(msg, "usage_metadata", None) or {}
     return int(meta.get("input_tokens", 0) or 0), int(meta.get("output_tokens", 0) or 0)
 
 
 def _text_of(msg: Any) -> str:
+    """Plain text of a model message across langchain-core versions (`.text` property or method, or `.content` as str or block list)."""
     t = getattr(msg, "text", None)
     if isinstance(t, str):  # property in langchain-core 1.x (a callable str subclass; don't call it)
         return str(t)
@@ -44,6 +55,14 @@ def _text_of(msg: Any) -> str:
 
 
 class GeminiClient:
+    """`LLMClient` backed by two `ChatGoogleGenerativeAI` models (`settings.primary_model`, `settings.fallback_model`).
+
+    Built by `Deps.live` and the `doctor` command. `retries` is attempts per model, `backoff_s` the first sleep
+    (doubling), `down_for_s` how long the primary is skipped after a full retryable-failure run. `primary`,
+    `fallback`, `sleep` and `clock` can be injected for tests; SDK-level retries are off (`max_retries=0`) so
+    this class owns all retry behaviour.
+    """
+
     retries = 3
     backoff_s = 2.0
     down_for_s = 60.0
@@ -73,6 +92,11 @@ class GeminiClient:
         schema: type[BaseModel] | None = None,
         node: str = "",
     ) -> LLMResult:
+        """Call the primary then the fallback model; return the first usable `LLMResult` (`fallback=True` if the fallback answered).
+
+        With `schema`, uses structured output and requires a parsed object. Raises `LLMUnavailable` when both
+        models fail, carrying the last error.
+        """
         chain = [("primary", self.primary, self.primary_name), ("fallback", self.fallback, self.fallback_name)]
         if self._clock() < self._primary_down_until:
             chain = chain[1:]

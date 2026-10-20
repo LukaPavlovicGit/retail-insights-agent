@@ -1,3 +1,4 @@
+"""Scripted `LLMClient` for tests, so graph tests run offline and deterministically. Depends only on `llm.client`."""
 from __future__ import annotations
 
 from typing import Any, Sequence
@@ -12,7 +13,9 @@ class FakeLLM:
     """Scripted LLM for tests. `script` maps node name -> list of outputs consumed in order.
 
     An output may be a str, a pydantic instance, a dict (validated against `schema`), or an
-    Exception instance (raised).
+    Exception instance (raised). When a node's list is empty, `default` is returned as text. Every call is
+    recorded in `calls` (node, system prompt, messages, schema) so tests can assert on what was sent.
+    Results report model "fake", the same shape as a real `LLMResult`.
     """
 
     def __init__(self, script: dict[str, list[Any]] | None = None, default: str = "ok"):

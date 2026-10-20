@@ -1,3 +1,11 @@
+"""Assemble the per-turn LangGraph: every node, every edge, and the routing tables.
+
+Flow of one turn: begin_turn -> router -> one intent branch -> finalize -> update_memory -> write_trace -> END.
+The analysis branch is retrieve_trios -> generate_sql -> guard_sql -> execute_sql -> analyze -> render, with
+guard_sql and execute_sql able to loop through repair_sql or stop at give_up. Any node can divert to `fail`
+by setting `state["error"]`; all terminal branches pass through finalize so masking, memory and tracing always run.
+This module only wires things; node behaviour is in `analysis`, `library`, `router`, `schema_qa` and `lifecycle`.
+"""
 from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
@@ -14,6 +22,7 @@ from ria.graph.router import make_ack_preference, make_refuse, make_router
 from ria.graph.schema_qa import make_schema_answer
 from ria.graph.state import AgentState
 
+# Router intent -> first node of that branch ("fail" is returned by route_intent when state["error"] is set).
 INTENT_ROUTES = {
     "analysis": "retrieve_trios",
     "schema_question": "schema_answer",
@@ -26,6 +35,13 @@ INTENT_ROUTES = {
 
 
 def build_graph(deps: Deps, checkpointer=None):
+    """Compile the turn graph with `deps` closed over by every node.
+
+    Each node is wrapped by `timed` (records node timings and turns LLM-budget and model-outage errors into
+    `state["error"]`). `max_repairs` from settings is bound into the two repair edge functions. A checkpointer is
+    required for the delete confirmation, because `interrupt` pauses the turn and resumes from saved state;
+    chat uses SQLite, evals use an in-memory saver, and `None` is fine for tests that never interrupt.
+    """
     s = deps.settings
     g = StateGraph(AgentState)
     factories = {

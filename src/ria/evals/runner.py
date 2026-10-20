@@ -1,3 +1,9 @@
+"""Run the evaluation cases through the real graph and score the answers.
+
+`run_evals` is used by `ria eval`. Each case is a normal turn against live Gemini and BigQuery (through the MCP
+server), checked with the deterministic rules in `evals.checks` and then graded 1 to 5 by an LLM judge. Judge scores
+are informational; only the deterministic failures decide pass or fail. Results are also written to a timestamped JSON file under `evals/`.
+"""
 from __future__ import annotations
 
 import json
@@ -29,11 +35,21 @@ Give a one-sentence reason."""
 
 
 class Judgement(BaseModel):
+    """Structured output of the judge call: an integer `score` from 1 to 5 and a one-sentence `reason`."""
+
     score: int = Field(ge=1, le=5)
     reason: str = ""
 
 
 async def run_evals(settings: Settings, conn, cases: list[EvalCase], judge: LLMClient | None = None, only: str | None = None) -> list[dict]:
+    """Run `cases` (or just the one whose id equals `only`) and return one result dict per case: id, intent,
+    outcome, `failures` (from `check_case`), judge `score` and `reason`, and `turn_id`.
+
+    Each case gets its own thread on an in-memory checkpointer. A delete confirmation is always declined, so
+    evals never remove reports. A case whose user is not in the database is reported as skipped with a failure.
+    `judge` defaults to the live LLM client; a judge error is recorded in `reason` and does not stop the run.
+    Needs credentials and spends real API and BigQuery quota.
+    """
     rows: list[dict] = []
     async with open_mcp_toolbox(settings) as toolbox:
         deps = Deps.live(settings, conn, toolbox)

@@ -1,4 +1,8 @@
-"""Non-interactive pieces of the CLI, kept separate so they are testable without a terminal."""
+"""Non-interactive pieces of the CLI, kept separate so they are testable without a terminal.
+
+`run_init` backs `ria init` (load users and seed Golden Trios, embed them, cache the live schema, check user categories).
+`chat_loop` is the read-eval-print loop behind `ria chat`; it drives `graph.run.run_turn` and handles the delete confirmation.
+All I/O (prompting, printing, BigQuery, embeddings) is injected, so tests call these with fakes."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +20,16 @@ from ria.guards.schema import STATIC_SCHEMA
 
 def run_init(settings: Settings, conn, embedder: Embedder, schema_fetch: Callable[[], dict] | None,
              live_categories: Callable[[], list[str]] | None) -> dict:
-    users = db.load_users(conn, settings.users_path)
+    """Prepare the local database and data files for chat. Safe to re-run.
+
+    Loads users.yaml, replaces the seed Golden Trios, and embeds every trio that has no vector yet (including
+    user-saved candidates). If `schema_fetch` returns a schema containing every static table it is
+    written to `settings.schema_path`; any failure or partial result keeps the built-in schema. If
+    `live_categories` is given, user categories missing from the dataset are reported, not rejected.
+    Returns a summary dict (counts, `schema_source` "live" or "static", `unknown_categories`, `category_check`
+    "ok" or "failed") that the CLI prints. Embedding errors propagate; schema and category lookups never raise.
+    """
+    users =db.load_users(conn, settings.users_path)
     trios = load_trios_dir(settings.trios_dir)
     store = TrioStore(conn)
     store.replace_seed(trios)
@@ -52,10 +65,12 @@ def run_init(settings: Settings, conn, embedder: Embedder, schema_fetch: Callabl
 
 
 def parse_confirmation(text: str) -> bool:
+    """Only an explicit "yes" or "y" confirms a delete; anything else, including empty input, cancels."""
     return text.strip().lower() in {"yes", "y"}
 
 
 def format_interrupt(payload: dict) -> str:
+    """Render the `confirm_delete` interrupt payload (`{"action", "reports": [{id, title, created_at}]}`) as a prompt."""
     reports = payload.get("reports", [])
     lines = [f"This will permanently delete {len(reports)} report(s):", ""]
     lines += [f"- #{r['id']}  {r['title']}  ({r.get('created_at', '')})" for r in reports]
@@ -64,7 +79,13 @@ def format_interrupt(payload: dict) -> str:
 
 
 async def chat_loop(app, user: dict, thread_id: str, prompt_fn, print_fn, run_turn_fn=run_turn, status_fn=None) -> None:
-    """`prompt_fn` is async; `status_fn` prints the dim turn line (defaults to `print_fn`)."""
+    """Run the interactive loop for one user and thread until EOF or Ctrl-C at the prompt.
+
+    `prompt_fn` is async; `status_fn` prints the dim turn line (defaults to `print_fn`). Each input goes through
+    `run_turn_fn`. If the turn pauses with `needs_confirmation` (the graph's delete interrupt), the loop shows the
+    reports, asks for confirmation, and resumes the same thread with `{"confirmed": bool}`; a missing answer counts
+    as "no". Exceptions from a turn are printed and the loop continues, so one bad turn never ends the session.
+    """
     status_fn = status_fn or print_fn
     print_fn(f"Chatting as {user['name']} ({user['role']}). Thread {thread_id}. Ctrl-D to exit.")
     while True:
