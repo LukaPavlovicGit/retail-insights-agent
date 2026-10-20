@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,13 +18,21 @@ from ria.observability.trace import TraceStore, TurnTrace
 SEED_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
+def seed_copy(tmp_path: Path) -> Path:
+    """Copy the seed users and Trios into a temp data dir so init never writes into the repo's data/."""
+    data = tmp_path / "data"
+    shutil.copytree(SEED_DIR / "golden_trios", data / "golden_trios")
+    shutil.copy(SEED_DIR / "users.yaml", data / "users.yaml")
+    return data
+
+
 def test_parse_confirmation():
     assert parse_confirmation("yes") and parse_confirmation(" Yes ") and parse_confirmation("y")
     assert not parse_confirmation("yes please") and not parse_confirmation("no") and not parse_confirmation("")
 
 
 def test_run_init_loads_users_trios_and_embeddings(settings, tmp_path):
-    settings = replace(settings, data_dir=SEED_DIR, db_path=tmp_path / "ria.db")
+    settings = replace(settings, data_dir=seed_copy(tmp_path), db_path=tmp_path / "ria.db")
     conn = db.connect(settings.db_path)
     db.init_schema(conn, settings.embedding_dim)
     report = run_init(settings, conn, FakeEmbedder(settings.embedding_dim),
@@ -33,11 +42,12 @@ def test_run_init_loads_users_trios_and_embeddings(settings, tmp_path):
     assert report["schema_source"] == "live" and report["unknown_categories"] == []
     assert TrioStore(conn).missing_embeddings() == []
     assert (tmp_path / "ria.db").exists()
+    assert settings.schema_path.exists() and not (SEED_DIR / "schema.json").exists()
     conn.close()
 
 
 def test_run_init_reports_unknown_categories_and_static_schema(settings, tmp_path):
-    settings = replace(settings, data_dir=SEED_DIR, db_path=tmp_path / "ria.db")
+    settings = replace(settings, data_dir=seed_copy(tmp_path), db_path=tmp_path / "ria.db")
     conn = db.connect(settings.db_path)
     db.init_schema(conn, settings.embedding_dim)
     report = run_init(settings, conn, FakeEmbedder(settings.embedding_dim), schema_fetch=None, live_categories=lambda: ["Jeans"])
