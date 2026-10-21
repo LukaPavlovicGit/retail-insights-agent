@@ -38,6 +38,8 @@ PII_COLUMNS: frozenset[str] = frozenset(
     {"email", "first_name", "last_name", "street_address", "postal_code", "latitude", "longitude"}
 )
 
+DEMOGRAPHIC_COLUMNS: frozenset[str] = frozenset({"age", "gender", "state", "city", "country", "traffic_source"})
+
 TABLE_NOTES = {
     "users": "one row per customer; demographics only may be used (state, age, gender, traffic_source, created_at)",
     "orders": "one row per order; status in Complete, Shipped, Processing, Cancelled, Returned",

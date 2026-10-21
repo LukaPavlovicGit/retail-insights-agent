@@ -195,3 +195,34 @@ def test_rejects_select_star_on_unknown_table():
 def test_known_tables_emit_table_ok():
     r = g(f"SELECT p.category FROM {OI} oi JOIN {P} p ON p.id = oi.product_id", categories=None)
     assert r.ok and "table:ok" in r.events
+
+
+def test_demographics_rejects_individual_with_demographic():
+    r = g(f"SELECT oi.user_id, u.state, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY 1, 2", categories=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_allows_individual_without_demographic():
+    r = g(f"SELECT oi.user_id, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1", categories=None)
+    assert r.ok and "demographics:ok" in r.events and "HAVING" not in r.sql
+
+
+def test_demographics_min_group_added_on_group_by():
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state", categories=None)
+    assert r.ok and "demographics:min_group" in r.events
+    assert "HAVING COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_ands_into_existing_having():
+    r = g(f"SELECT u.state, COUNT(*) AS n FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state HAVING COUNT(*) > 5", categories=None)
+    assert r.ok and r.sql.count("HAVING") == 1 and "COUNT(*) > 5 AND COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_uses_order_items_user_id_without_users_table():
+    r = g(f"SELECT u.city, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.city", categories=None)
+    assert r.ok and "COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_size_setting():
+    r = guard_sql(f"SELECT u.gender, COUNT(*) AS n FROM {U} u JOIN {OI} oi ON oi.user_id = u.id JOIN {P} p ON p.id = oi.product_id GROUP BY u.gender", scope=None, dataset=DS, min_group_size=25)
+    assert ">= 25" in r.sql

@@ -16,7 +16,7 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError, ParseError
 from sqlglot.optimizer.qualify import qualify
 
-from ria.guards.schema import PII_COLUMNS, STATIC_SCHEMA, qualify_schema
+from ria.guards.schema import DEMOGRAPHIC_COLUMNS, PII_COLUMNS, STATIC_SCHEMA, qualify_schema
 
 SET_OP = getattr(exp, "SetOperation", exp.Union)
 
@@ -72,8 +72,9 @@ def guard_sql(
     none); a SELECT over only orders or users gets a semi-join predicate on order_items and products instead; a
     SELECT with no dataset tables is skipped, and a query where nothing could be scoped is rejected. None means
     unrestricted. `dataset` is `project.dataset`. `schema` defaults to the static schema. The LIMIT is added if
-    missing and clamped to `row_cap` if larger or not a plain number. `min_group_size` is reserved for the
-    demographics rules (not used yet).
+    missing and clamped to `row_cap` if larger or not a plain number. A SELECT may not show a demographic
+    column next to an individual customer id outside an aggregate; one that groups by a demographic column gets
+    `HAVING COUNT(DISTINCT <customer id>) >= min_group_size` (ANDed into any existing HAVING).
     """
     events: list[str] = []
 
@@ -119,6 +120,42 @@ def guard_sql(
         if isinstance(col, exp.Column) and "users" in alias_to_tables.get(col.table, set()) and col.name in PII_COLUMNS:
             return reject("pii", f"Column users.{col.name} is personal data and may not be queried")
     events.append("pii:ok")
+
+    def bare_columns(item: exp.Expression, sel: exp.Select) -> list[tuple[str, str]]:
+        """(table name, column) for each column of `sel` under `item` outside any aggregate function."""
+        found = []
+        for col in item.find_all(exp.Column):
+            if col.parent_select is sel and col.find_ancestor(exp.AggFunc) is None:
+                found += [(t, col.name) for t in alias_to_tables.get(col.table, ())]
+        return found
+
+    for sel in list(tree.find_all(exp.Select)):
+        select_cols = [c for item in sel.expressions for c in bare_columns(item, sel)]
+        has_demo = any(t == "users" and c in DEMOGRAPHIC_COLUMNS for t, c in select_cols)
+        has_id = any((t, c) in {("users", "id"), ("order_items", "user_id"), ("orders", "user_id")} for t, c in select_cols)
+        if has_demo and has_id:
+            return reject("demographics", "Demographics may only appear in aggregates, never alongside an individual customer id")
+        group = sel.args.get("group")
+        if group is None:
+            continue
+        group_cols = []
+        for g_expr in group.expressions:
+            if isinstance(g_expr, exp.Literal) and g_expr.is_int and 1 <= int(g_expr.name) <= len(sel.expressions):
+                g_expr = sel.expressions[int(g_expr.name) - 1]
+            group_cols += bare_columns(g_expr, sel)
+        if any(t == "users" and c in DEMOGRAPHIC_COLUMNS for t, c in group_cols):
+            sources = _tables_of(sel)
+            key = next(((sources[t], c) for t, c in (("users", "id"), ("order_items", "user_id"), ("orders", "user_id")) if t in sources), None)
+            if key is not None:
+                sel.having(
+                    exp.GTE(
+                        this=exp.Count(this=exp.Distinct(expressions=[exp.column(key[1], table=key[0], quoted=True)])),
+                        expression=exp.Literal.number(min_group_size),
+                    ),
+                    copy=False,
+                )
+                events.append("demographics:min_group")
+    events.append("demographics:ok")
 
     if scope is None:
         events.append("scope:unrestricted")
