@@ -232,7 +232,8 @@ and prints the saved version. The next turn uses the new persona; no restart. Ro
 publishing a saved version. The lint rejects an empty or over-long persona and any line
 that tries to override instructions, names brands, scope, email, SQL, SELECT, delete, PII or
 the minimum group size, changes the output language, or redefines churn or revenue;
-naming a metric as a topic is fine. Everything the persona may not change lives in code or
+naming a metric as a topic is fine, and a report header may not name a brand because the
+persona is shared by every user. Everything the persona may not change lives in code or
 in `org_defaults.yaml`, with its own owner.
 
 ## 8. Extension points

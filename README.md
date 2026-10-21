@@ -145,10 +145,11 @@ uv run ria persona check my-persona.md --live     # also runs the 24 eval cases 
 uv run ria persona publish my-persona.md [--live] # same checks, then replaces data/persona.md
 ```
 
-The lint rejects an empty persona, more than 4000 characters, and any line that touches
-scope, brands, email, SQL, PII, the minimum group size, the output language (English only),
-or redefines churn or revenue; naming a metric ("round revenue to the nearest thousand") is
-fine. `--live` requires zero deterministic eval failures and a judge mean of at least 4.0.
+The lint rejects an empty persona, more than 4000 characters, and any line that tries to
+override instructions, touches scope, brands, email, SQL, SELECT, delete, PII, the minimum
+group size, the output language (English only), or redefines churn or revenue; naming a
+metric ("round revenue to the nearest thousand") is fine. A report header may not name a
+brand, because the persona is shared by every user and scope is per user. `--live` requires zero deterministic eval failures and a judge mean of at least 4.0.
 Publish saves the current persona to `data/persona_versions/<UTC timestamp>.md` first, so
 rolling back is publishing a saved version. There is no manual approval step.
 

@@ -296,6 +296,6 @@ Two configuration files sit next to the store and are read on every turn, not lo
 it. `data/org_defaults.yaml` holds `churn_window_days` (90), `revenue_statuses` (Complete,
 Shipped, Processing) and `min_group_size` (10); it feeds the guard's HAVING threshold and
 the "Business definitions" block in the SQL and analysis prompts from one source, and an
-invalid file fails the turn with a message naming the key. `data/persona_versions/` (git-ignored)
+invalid file fails the turn with a message naming the key (or the file, for a YAML syntax error). `data/persona_versions/` (git-ignored)
 receives the replaced `persona.md` on every `ria persona publish`, named by UTC timestamp,
 so a persona change can be rolled back by publishing a saved version.

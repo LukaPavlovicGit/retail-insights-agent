@@ -477,7 +477,7 @@ user meant.
 
 **Prototype.**
 
-- **Unit tests.** 259 tests, no network, about 6 s. Guards, masker, retrieval, preference
+- **Unit tests.** 259 tests, no network, a few seconds. Guards, masker, retrieval, preference
   extraction, report target resolution, LLM retry and fallback, BigQuery error
   classification and breaker, trace store and stats, org defaults validation, persona gate,
   CLI pieces.
@@ -632,8 +632,10 @@ says so.
 
 **What the persona may not change.** OpsFleet left the boundary to us. Through the persona a
 non-developer may change tone and voice, what to emphasise, the default answer format and
-depth wording, a disclaimer line and a report header. They may not change user scope, safety
-rules, business definitions, the output language (English only, per OpsFleet) or tool access.
+depth wording, a disclaimer line and a report header (one that names no brand: the persona is
+shared by every user and scope is per user, so the lint rejects the word). They may not change
+user scope, safety rules, business definitions, the output language (English only, per OpsFleet)
+or tool access.
 Those live in code or in `org_defaults.yaml` with their own owner, and the lint in section 6
 rejects a persona that tries to reach them.
 

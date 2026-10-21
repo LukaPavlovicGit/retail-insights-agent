@@ -59,6 +59,9 @@ def test_language_rules():
     assert lint_persona("Reply in Spanish.") == ["line 1: changes the output language (English only)"]
     assert lint_persona("Answer in English.") == []
     assert lint_persona("Use plain language.") == []
+    for allowed in ("Reply in bullet points.", "Answer in a short paragraph.", "Respond in under 150 words.", "Write in plain English."):
+        assert lint_persona(allowed) == [], allowed
+    assert lint_persona("Speak in Serbian when asked.") == ["line 1: changes the output language (English only)"]
     assert lint_persona("Output language: Spanish") == ["line 1: mentions language (English only)"]
     assert lint_persona("The language should be French.") == ["line 1: mentions language (English only)"]
 

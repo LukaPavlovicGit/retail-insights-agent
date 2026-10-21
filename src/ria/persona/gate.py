@@ -19,12 +19,13 @@ from pathlib import Path
 MAX_PERSONA_CHARS = 4000
 JUDGE_THRESHOLD = 4.0
 
+# Only a named non-English language trips the language rules; "reply in bullet points" is format wording and allowed.
+_LANGUAGES = r"\b(?:spanish|french|german|serbian|croatian|italian|portuguese|dutch|polish|chinese|japanese|korean|arabic|russian|hindi|turkish)\b"
 # Matched against each line.
 FORBIDDEN_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\b(?:ignore|disregard|forget)\b[^.\n]{0,30}\b(?:instructions|rules)\b", "tries to override instructions"),
-    (r"\b(?:answer|reply|respond|write|speak)\b[^.\n]{0,20}\bin (?!english\b)[a-z]+", "changes the output language (English only)"),
-    (r"\b(?:output|answer|response|reply)\s+language\b|\blanguage\b[^.\n]{0,20}\b(?:spanish|french|german|serbian|italian|portuguese|chinese|japanese|arabic|russian|hindi)\b",
-     "mentions language (English only)"),
+    (r"\b(?:answer|reply|respond|write|speak)\b[^.\n]{0,20}\bin " + _LANGUAGES, "changes the output language (English only)"),
+    (r"\b(?:output|answer|response|reply)\s+language\b|\blanguage\b[^.\n]{0,20}" + _LANGUAGES, "mentions language (English only)"),
     (r"\bbrands?\b", "mentions brands (scope is not the persona's job)"),
     (r"\bscope\b", "mentions scope"),
     (r"\be-?mails?\b", "mentions email (personal data is handled by the guard)"),
