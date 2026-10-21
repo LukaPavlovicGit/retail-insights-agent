@@ -19,7 +19,7 @@ from ria.guards.schema import load_schema, schema_digest
 from ria.llm.client import LLMClient
 from ria.memory.prefs import PrefsStore
 from ria.observability.trace import TraceStore
-from ria.persona.loader import load_persona
+from ria.persona.loader import load_definitions, load_persona
 from ria.tools import ToolBox
 
 
@@ -52,6 +52,10 @@ class Deps:
     def persona(self) -> str:
         """Persona text for prompts, re-read from disk on each call so edits to persona.md apply without a restart."""
         return load_persona(self.settings.persona_path)
+
+    def definitions(self) -> str:
+        """Business definitions (churn, revenue, ...) for prompts, re-read from disk on each call like `persona`."""
+        return load_definitions(self.settings.definitions_path)
 
     @classmethod
     def for_tests(cls, conn, settings, llm, toolbox, embedder=None) -> "Deps":

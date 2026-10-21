@@ -89,7 +89,7 @@ def make_generate_sql(deps: Deps):
         ctx = base_system(deps, state)
         system = SQL_SYSTEM.format(
             persona=ctx["persona"], user_name=ctx["user_name"], user_role=ctx["user_role"], scope=ctx["scope"],
-            summary_block=ctx["summary_block"], schema_text=deps.schema_text,
+            summary_block=ctx["summary_block"], schema_text=deps.schema_text, definitions=ctx["definitions"],
             examples=_examples(state.get("retrieved_trios", []), with_sql=True),
         )
         res, calls = await call_llm(deps, state, node="generate_sql", system=system, messages=window(state, deps), schema=SqlPlan)
@@ -196,7 +196,8 @@ def make_repair_sql(deps: Deps):
             blocks.append(f"Attempt {i}:\n{a['sql']}\nResult: {result}")
         history = "\n\n".join(blocks)
         system = REPAIR_SYSTEM.format(persona=ctx["persona"], user_name=ctx["user_name"], user_role=ctx["user_role"],
-                                      scope=ctx["scope"], schema_text=deps.schema_text, history=history)
+                                      scope=ctx["scope"], schema_text=deps.schema_text, definitions=ctx["definitions"],
+                                      history=history)
         res, calls = await call_llm(deps, state, node="repair_sql", system=system,
                                     messages=[HumanMessage(content=f"Original question: {state['question']}")], schema=SqlPlan)
         return {"sql": strip_fences(res.parsed.sql), "repairs": int(state.get("repairs", 0)) + 1,
@@ -240,7 +241,7 @@ def make_analyze(deps: Deps):
         system = ANALYZE_SYSTEM.format(
             persona=ctx["persona"], user_name=ctx["user_name"], user_role=ctx["user_role"], scope=ctx["scope"],
             prefs=ctx["prefs"], depth_instruction=DEPTH_INSTRUCTIONS[prefs.depth],
-            format_instruction=FORMAT_INSTRUCTIONS[prefs.format],
+            format_instruction=FORMAT_INSTRUCTIONS[prefs.format], definitions=ctx["definitions"],
             examples=_examples(state.get("retrieved_trios", []), with_sql=False),
         )
         rows = state.get("result_rows") or []

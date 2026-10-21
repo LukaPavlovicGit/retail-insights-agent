@@ -140,6 +140,19 @@ async def test_analyze_uses_prefs_and_rows(conn, settings):
     assert "Jeans" in call["messages"][-1].content and "1200.5" in call["messages"][-1].content
 
 
+async def test_prompts_carry_business_definitions(conn, settings):
+    deps = make_deps(conn, settings, {
+        "generate_sql": [SqlPlan(plan="p", sql="SELECT 1")], "repair_sql": [SqlPlan(plan="p", sql="SELECT 2")],
+        "analyze": ["ok"],
+    })
+    await make_generate_sql(deps)(turn_state("q"))
+    await make_repair_sql(deps)(turn_state("q", sql_attempts=[], repairs=0))
+    await make_analyze(deps)(turn_state("q", result_rows=ROWS, sql="SELECT 1"))
+    for call in deps.llm.calls:
+        assert "90 days" in call["system"] and "Complete, Shipped or Processing" in call["system"]
+    assert "state the definition" in deps.llm.calls[2]["system"]
+
+
 async def test_render_table_and_deep(conn, settings):
     deps = make_deps(conn, settings)
     deps.prefs_store.apply("alice", {"format": "table", "depth_up": True})
