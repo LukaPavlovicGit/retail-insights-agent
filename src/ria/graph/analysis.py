@@ -107,7 +107,7 @@ def make_guard_sql(deps: Deps):
         sql = state.get("sql") or ""
         events = list(state.get("guard_events", []))
         attempts = list(state.get("sql_attempts", []))
-        r = guard_sql(sql, categories=state["user"]["categories"], dataset=deps.settings.dataset,
+        r = guard_sql(sql, scope=state["user"]["categories"], dataset=deps.settings.dataset,
                       row_cap=deps.settings.row_cap, schema=deps.schema)
         events += r.events
         if not r.ok:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from ria.guards.schema import STATIC_SCHEMA, schema_digest, load_schema
@@ -9,11 +11,12 @@ DS = "bigquery-public-data.thelook_ecommerce"
 OI = f"`{DS}.order_items`"
 P = f"`{DS}.products`"
 U = f"`{DS}.users`"
+O = f"`{DS}.orders`"
 
 
-def g(sql, categories=("Jeans", "Pants"), **kw):
-    cats = None if categories is None else list(categories)
-    return guard_sql(sql, categories=cats, dataset=DS, **kw)
+def g(sql, categories=("Levi's", "Carhartt"), **kw):
+    scope = None if categories is None else list(categories)
+    return guard_sql(sql, scope=scope, scope_column="brand", dataset=DS, **kw)
 
 
 def test_rejects_non_select():
@@ -69,18 +72,36 @@ def test_rejects_unknown_column_with_reason():
 def test_scope_injected_when_products_present():
     r = g(f"SELECT p.category, SUM(oi.sale_price) AS rev FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1")
     assert r.ok and "scope:injected" in r.events
-    assert "`p`.`category` IN ('Jeans', 'Pants')" in r.sql
+    assert "`p`.`brand` IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
 def test_scope_adds_join_when_only_order_items():
     r = g(f"SELECT COUNT(*) AS n FROM {OI} oi")
     assert r.ok and "scope:join_added" in r.events and "scope:injected" in r.events
-    assert "products" in r.sql and "IN ('Jeans', 'Pants')" in r.sql
+    assert "products" in r.sql and "IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
-def test_scope_rejects_when_no_product_path():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state")
-    assert not r.ok and "scope:rejected" in r.events and "order_items" in r.reason
+def test_scope_semijoin_for_users_only():
+    r = g(f"SELECT DATE_TRUNC(DATE(created_at), MONTH) AS m, COUNT(*) AS signups FROM {U} GROUP BY m")
+    assert r.ok and "scope:semijoin" in r.events
+    assert re.search(r"`id` IN \(SELECT .*user_id FROM .*order_items.* JOIN .*products.* WHERE .*`brand` IN \('Levi\\'s', 'Carhartt'\)\)", r.sql, re.S)
+    assert r.sql.index("IN (SELECT") < r.sql.index("GROUP BY")
+
+
+def test_scope_semijoin_for_orders_only_keeps_existing_where():
+    r = g(f"SELECT status, COUNT(*) AS n FROM {O} o WHERE o.created_at > '2026-01-01' GROUP BY status")
+    assert r.ok and "scope:semijoin" in r.events
+    assert "`o`.`created_at` > '2026-01-01' AND `o`.`order_id` IN (SELECT" in r.sql
+
+
+def test_scope_semijoin_prefers_orders_when_users_and_orders_present():
+    r = g(f"SELECT u.state, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.state")
+    assert r.ok and "scope:semijoin" in r.events and "`o`.`order_id` IN (SELECT" in r.sql
+
+
+def test_scope_column_setting():
+    r = guard_sql(f"SELECT category FROM {P}", scope=["Jeans"], scope_column="category", dataset=DS)
+    assert r.ok and "`category` IN ('Jeans')" in r.sql
 
 
 def test_scope_skipped_for_unrestricted_user():
@@ -95,10 +116,7 @@ def test_scope_injected_inside_cte():
     )
     r = g(sql)
     assert r.ok and "scope:injected" in r.events
-    assert "`oi`.`status` = 'Complete' AND `p`.`category` IN ('Jeans', 'Pants')" in r.sql
-
-
-O = f"`{DS}.orders`"
+    assert "`oi`.`status` = 'Complete' AND `p`.`brand` IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
 @pytest.mark.parametrize(
@@ -114,22 +132,24 @@ def test_rejects_whole_row_users_reference(sql):
     assert not r.ok and "pii:rejected" in r.events and "Whole-row" in r.reason
 
 
-def test_scope_rejects_orders_with_products_only_in_subquery():
+def test_scope_orders_with_products_only_in_subquery_gets_semijoin_and_inner_predicate():
     r = g(f"SELECT status, COUNT(*) AS n FROM {O} WHERE EXISTS (SELECT 1 FROM {P}) GROUP BY status")
-    assert not r.ok and "scope:rejected" in r.events
+    assert r.ok and "scope:semijoin" in r.events and "scope:injected" in r.events
+    assert "`order_id` IN (SELECT" in r.sql
+    assert re.search(r"EXISTS\(SELECT 1 .*FROM .*products.* WHERE `products`\.`brand` IN .*\) AND `orders`\.`order_id` IN \(SELECT", r.sql, re.S)
 
 
-def test_scope_orders_only_rejected_for_scoped_ok_for_unrestricted():
+def test_scope_orders_only_scoped_and_unrestricted():
     sql = f"SELECT status, COUNT(*) AS n FROM {O} GROUP BY status"
-    assert "scope:rejected" in g(sql).events
+    assert "scope:semijoin" in g(sql).events
     r = g(sql, categories=None)
-    assert r.ok and "scope:unrestricted" in r.events
+    assert r.ok and "scope:unrestricted" in r.events and "IN (" not in r.sql
 
 
 def test_scope_injected_in_derived_table_inner_select():
     r = g(f"SELECT t.c FROM (SELECT p.category AS c FROM {P} p) t")
     assert r.ok and "scope:injected" in r.events
-    assert r.sql.index("IN ('Jeans', 'Pants')") < r.sql.index(") AS `t`")
+    assert r.sql.index("IN ('Levi\\'s', 'Carhartt')") < r.sql.index(") AS `t`")
 
 
 def test_limit_added_and_clamped():

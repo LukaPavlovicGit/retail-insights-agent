@@ -126,5 +126,5 @@ def test_seed_trios_pass_guard_for_scoped_and_unscoped_users():
     assert len(trios) == 15
     for t in trios:
         for cats in (None, ["Jeans", "Pants"]):
-            r = guard_sql(t.sql, categories=cats, dataset="bigquery-public-data.thelook_ecommerce")
+            r = guard_sql(t.sql, scope=cats, dataset="bigquery-public-data.thelook_ecommerce")
             assert r.ok, f"{t.question} ({cats}): {r.reason}"
