@@ -9,7 +9,7 @@ Requirements 2, 3, 5 and 7 are fully implemented in the prototype. Requirements 
 8 have a thin working version in the prototype plus a production design.
 
 All paths below are relative to `src/ria/` unless they start with `tests/`, `data/` or
-`evals/`. The test suite has 221 tests and runs offline (`uv run pytest`).
+`evals/`. The test suite has 259 tests and runs offline (`uv run pytest`).
 
 OpsFleet answered the clarification questions after the first version. Section 13 lists the
 answers, what each one changed, and the items still open.
@@ -62,14 +62,18 @@ use them to improve answers, and grow the set over time.
   SQL prompt as worked examples with question, SQL and analyst report ("adapt their logic; do
   not copy blindly"). `analyze` puts the same Trios in without the SQL, as a style reference
   for the written answer.
-- **Business definitions.** `data/definitions.md` holds the agreed definitions: churn is no
-  purchase in the last 90 days; revenue is the sum of `order_items.sale_price` for status
-  Complete, Shipped or Processing (Cancelled and Returned excluded). `Deps.definitions()`
-  (`persona/loader.py`, `load_definitions`) reads the file on every call, like the persona,
-  and falls back to built-in text if it is missing or empty. The text goes into the SQL,
-  repair and analysis prompts. The analysis prompt tells the model to state the definition
-  used whenever it reports churn or revenue, and to use the user's own window or statuses
-  for that answer (and say so) when the question names them.
+- **Business definitions.** `data/org_defaults.yaml` holds the agreed values:
+  `churn_window_days` (90), `revenue_statuses` (Complete, Shipped, Processing; Cancelled and
+  Returned excluded) and `min_group_size` (10). `config.py` (`OrgDefaults.load`) reads and
+  validates the file on every turn through `Deps.org_defaults()`, like the persona, so an edit
+  takes effect on the next answer. `render_definitions` turns the loaded values into the
+  "Business definitions" block (churn is no purchase in the last N days; revenue is the sum
+  of `order_items.sale_price` for the listed statuses; active and new customer), which
+  `Deps.definitions()` returns and the SQL, repair and analysis prompts include. The same
+  object feeds the guard's minimum group size, so the prompt and the guard never disagree.
+  The analysis prompt tells the model to state the definition used whenever it reports churn
+  or revenue, and to use the user's own window or statuses for that answer (and say so) when
+  the question names them. Section 8 describes the configuration layers and who owns each.
 - **Update loop.** Saying "save this as a report" saves the report (`graph/library.py`,
   `save_report`) and inserts a `pending` Trio with `source='user'`, tagged with the user's
   brands (`all` for an unrestricted user). `ria golden list`, `ria golden promote <id>` and `ria golden reject <id>`
@@ -81,8 +85,9 @@ use them to improve answers, and grow the set over time.
   `test_search_respects_k_and_distance`, `test_replace_seed_keeps_user_trios`,
   `test_load_trios_dir_reports_bad_file`, `test_seed_trios_pass_guard_for_scoped_and_unscoped_users`.
   `tests/test_graph_analysis.py`: `test_generate_sql_strips_fences_and_uses_examples`,
-  `test_prompts_carry_business_definitions`. `tests/test_memory_persona.py`:
-  `test_load_definitions`.
+  `test_prompts_carry_business_definitions`. `tests/test_config_db.py`:
+  `test_org_defaults_load_and_fallback`, `test_org_defaults_validation_names_key`,
+  `test_org_defaults_yaml_syntax_error_names_file`.
   `tests/test_graph_library.py`: `test_save_report_saves_and_creates_candidate_trio`.
 
 **Production.**
@@ -159,8 +164,8 @@ as `pii:ok` or `demographics:rejected` to the turn's `guard_events`.
      by position, `GROUP BY 1`) and reads `users`, `order_items` or `orders` directly gets
      `HAVING COUNT(DISTINCT <customer id>) >= 10`, ANDed into any existing HAVING. The id is
      `users.id` when users is a source, else `order_items.user_id`, else `orders.user_id`.
-     Event `demographics:min_group`. The threshold is `Settings.min_group_size` (default 10,
-     env `RIA_MIN_GROUP_SIZE`). Groups below 10 customers are dropped from the result, not
+     Event `demographics:min_group`. The threshold is `min_group_size` in
+     `data/org_defaults.yaml` (10), read on every turn. Groups below 10 customers are dropped from the result, not
      reported as zero. Dropping applies to every demographic group because of the closing
      rule: a demographic column may appear bare in a select list only in a SELECT that has a
      GROUP BY containing it and reads a customer table (`users`, `order_items` or `orders`).
@@ -203,7 +208,7 @@ the trace.
 
 `save_report` also runs the masker, so saved report bodies and pending Trio candidates are masked before storage.
 
-**Tests.** `tests/test_sql_guard.py` (48 collected tests), including
+**Tests.** `tests/test_sql_guard.py` (65 collected tests), including
 `test_rejects_pii_aliased`, `test_rejects_pii_star_on_users`, `test_rejects_pii_inside_cte`,
 `test_rejects_whole_row_users_reference`, `test_scope_adds_join_when_only_order_items`,
 `test_scope_semijoin_for_users_only`, `test_scope_semijoin_for_orders_only_keeps_existing_where`,
@@ -398,6 +403,28 @@ The production items below use them.
   models are down. Plain text goes on to the LLM router.
 - **Title fallback.** If the titling call in `save_report` raises `LLMUnavailable`, the
   report is still saved, titled with the first 80 characters of the question.
+- **Fallback disclosure.** When any model call in a turn used the backup model and the turn
+  produced an answer (not an error, not a command outcome such as a report listing),
+  `finalize` appends "Note: answered with the backup model." (`FALLBACK_NOTE`,
+  `graph/lifecycle.py`) to the text the user sees. The note is user-facing only: it is not
+  stored in the conversation messages, so later prompts do not replay it, and it is not in
+  saved reports.
+- **Outage count.** `ria stats` shows `outage_turns`: turns whose error starts with
+  `LLMUnavailable` or whose last SQL attempt was `circuit_open`. It undercounts two
+  deliberate degraded paths that swallow a model outage without failing the turn: the
+  history summary in `begin_turn` and the title call in `save_report`. Both leave a mark
+  elsewhere (the guard event `summary:skipped_llm_unavailable`; a report titled with the
+  question).
+- **Timings and thresholds, and why.** OpsFleet left these to us (section 13, answer 9).
+
+  | Setting | Value | Why |
+  |---|---|---|
+  | Model retries | 3 attempts per model, 2 s then 4 s between them | Short enough for a chat; covers a transient 429 or 5xx without the user noticing more than a few seconds |
+  | Primary skipped after retryable exhaustion | 60 s | One minute matches the free-tier quota window, so the next turn does not burn three more attempts on a model that is still throttled |
+  | BigQuery timeout and byte cap | 60 s, 1 GB | A question from an executive over this dataset should not scan more; the cap bounds the cost of any single query |
+  | Circuit breaker | 3 consecutive failures open it for 5 minutes | Protects the quota during a warehouse incident instead of failing every turn one by one; resets by itself, no operator action |
+  | Model calls per turn | 8 | An analysis turn needs 3 to 5 (two repairs make 5) and a history summary makes 6; 8 leaves room without letting a loop run away |
+  | Ops alert (design) | 3 or more consecutive outage turns within 5 minutes, or a fallback rate over 15 minutes above 50 percent | Pages the on-call; the user already sees the model-unavailable or data-source-down message plus the slash commands that keep working (HLD section 9) |
 - **Outage scenarios.**
 
   | Down | Analysis and free-text questions | Commands |
@@ -437,9 +464,10 @@ The production items below use them.
 `tests/test_cli.py`: `test_chat_loop_survives_interrupt_during_turn`.
 
 **Production.** Vertex AI provisioned throughput for the primary model, so 429s become rare
-under normal load. A second Vertex region as failover for the model. A queue (Cloud Tasks or
-Pub/Sub) in front of the agent when quota is near its limit, with a "your answer is coming"
-message instead of an error. The circuit breaker state moves to Memorystore so all instances
+under normal load. A second Vertex region as failover for the model. No request queue:
+OpsFleet asked for best-effort behaviour when quota runs out (section 13, answer 9c-ii), so a
+turn that cannot get a model answers with the model-unavailable message and the slash
+commands keep working. The circuit breaker state moves to Memorystore so all instances
 share it.
 
 ## 6. Quality assurance
@@ -449,9 +477,10 @@ user meant.
 
 **Prototype.**
 
-- **Unit tests.** 221 tests, no network, under 3 s. Guards, masker, retrieval, preference
+- **Unit tests.** 259 tests, no network, about 6 s. Guards, masker, retrieval, preference
   extraction, report target resolution, LLM retry and fallback, BigQuery error
-  classification and breaker, trace store and stats, CLI pieces.
+  classification and breaker, trace store and stats, org defaults validation, persona gate,
+  CLI pieces.
 - **Graph tests with fakes.** `llm/fake.py` (`FakeLLM`) returns scripted outputs per node
   name; `tools.py` (`FakeToolBox`) returns scripted MCP responses; `golden/embed.py`
   (`FakeEmbedder`) is a deterministic hashing embedder. `tests/test_graph_integration.py`
@@ -495,10 +524,33 @@ Abandonment rate (sessions that end after a `gave_up`, `no_data` or `error` turn
 review session with two or three executives, using real transcripts, to find answers that
 were correct but not useful.
 
+**Persona changes go through the gate.** OpsFleet requires that a persona change passes an
+automated quality gate before it goes live, with no manual approval step. `persona/gate.py`
+and the `ria persona` commands (`cli.py`) implement it:
+
+- `ria persona check <file> [--live]` runs the checks and changes nothing.
+- `ria persona publish <file> [--live]` runs the same checks, then copies the current
+  `data/persona.md` to `data/persona_versions/<UTC timestamp>.md` and writes the candidate
+  to `data/persona.md` (`publish_persona`). Rollback is publishing a saved version.
+- The offline lint (`lint_persona`) rejects an empty file, more than 4000 characters, and
+  any line that tries to override instructions, names brands, scope, email, SQL, SELECT,
+  delete, PII or the minimum group size, or changes the output language (English only). It
+  also rejects a paragraph that redefines churn or revenue: the metric name within 80
+  characters of a defining word such as "is", "means", "window", "days" or "status".
+  Naming the metric as a topic ("round revenue to the nearest thousand") passes; the shipped
+  persona does exactly that. Every reason is printed with its line number.
+- `--live` (`live_gate`) runs the 24 eval cases with the candidate as the persona
+  (`Settings.persona_override`) and passes only with zero deterministic failures and a judge
+  mean of at least 4.0 (`JUDGE_THRESHOLD`). It needs credentials and makes the same calls as
+  `ria eval`.
+
+What the persona may and may not change is in section 8. Tests: `tests/test_persona_gate.py`
+(lint cases, versioned publish, override, live gate thresholds, both CLI commands).
+
 **CI gate (production).** On every change to prompts, guards, persona or Trios: the unit
 suite must pass, every deterministic eval check must pass, and the judge mean must be 4 or
-higher. The prototype computes all of these; the judge-mean threshold is not enforced in
-code yet.
+higher. The persona gate above enforces the judge-mean threshold for persona changes today;
+for prompt, guard and Trio changes it is computed but not yet enforced in code.
 
 ## 7. Observability
 
@@ -524,7 +576,9 @@ code yet.
   error or row count, the guard events, and the rating and correction mark when present.
 - **`ria stats [--since]`** (`render_stats`): turns; success rate (outcomes ok, saved,
   deleted, cancelled, listed, shown, rated, help); refusal rate; error rate (error,
-  gave_up); fallback rate; mean repairs over analysis turns only; guard rejections by rule
+  gave_up); fallback rate; `outage_turns` (turns whose error starts with `LLMUnavailable`
+  or whose last SQL attempt was `circuit_open`; see section 5 for what it does not count);
+  mean repairs over analysis turns only; guard rejections by rule
   (`pii`, `demographics`, `scope`, `resolve`, ...); p50 and p95 latency; mean tokens per
   turn; mean BigQuery bytes per turn; `rated good/bad` (counts of +1 and -1 ratings);
   `correction_rate` (corrected analysis turns over analysis turns); turns by intent.
@@ -558,16 +612,43 @@ code yet.
 built. Editing the file changes the next answer with no restart. A missing or empty file
 falls back to a one-line default persona. The shipped persona sets tone (lead with the
 answer, round numbers, flag thin data) and a weekly emphasis (connect findings to margin, end
-with at most three action items with owners).
+with at most three action items with owners). A change reaches `data/persona.md` through
+`ria persona publish`, which runs the gate in section 6 and keeps the previous version.
 
-**Tests.** `tests/test_memory_persona.py`: `test_load_persona`.
+**Configuration layers.** Four things shape an answer, and each has one owner and one way
+to change it. Lower rows never override higher ones.
+
+| Layer | Owner | How it changes | Gate | Examples |
+|---|---|---|---|---|
+| Code | Engineering | Pull request plus tests | Unit suite and evals | User scope, safety rules, tool access, output language (English only) |
+| Org defaults (`data/org_defaults.yaml`) | Data or admin team | Edit the file; read on every turn | Validated on load: window 1 to 3650 days, statuses a non-empty, duplicate-free subset of Complete, Shipped, Processing, Cancelled, Returned, group size 1 to 1000, no unknown keys, valid YAML. An invalid file ends the turn with "The org defaults file is invalid: ... Ask the data team to fix data/org_defaults.yaml." | `churn_window_days`, `revenue_statuses`, `min_group_size` |
+| Persona (`data/persona.md`) | Business or analytics lead | Edit a copy, `ria persona check`, `ria persona publish` | Lint, plus the eval set with `--live` | Tone and voice, emphasis, default answer format and depth wording, a disclaimer line, a report header |
+| User preferences | The user | Say it in chat ("use tables", "shorter") | None; presentation only | Format, depth, charts |
+
+Org defaults are business truth and apply to everyone. User preferences change how an
+answer is presented, never a definition; the analysis prompt says so. An inline request in a
+question ("use a 60-day window") overrides a definition for that answer only, and the answer
+says so.
+
+**What the persona may not change.** OpsFleet left the boundary to us. Through the persona a
+non-developer may change tone and voice, what to emphasise, the default answer format and
+depth wording, a disclaimer line and a report header. They may not change user scope, safety
+rules, business definitions, the output language (English only, per OpsFleet) or tool access.
+Those live in code or in `org_defaults.yaml` with their own owner, and the lint in section 6
+rejects a persona that tries to reach them.
+
+**Tests.** `tests/test_memory_persona.py`: `test_load_persona`. `tests/test_persona_gate.py`:
+`test_current_persona_passes`, `test_persona_override_wins`,
+`test_publish_persona_saves_previous_version`. `tests/test_graph_integration.py`:
+`test_invalid_org_defaults_goes_through_error_path`.
 
 **Production.** The persona is a versioned object in GCS (object versioning on). An admin
-page shows the current text, lets an authorised editor change it, and previews the change on
-a staging thread with a few fixed questions before publishing. Publishing writes a new
-version; the agent reads the latest version with a short cache (for example 60 s). Rollback
-means selecting an earlier version. The persona version is recorded in each trace, so a
-change in answer quality can be tied to a persona edit.
+page shows the current text, lets an authorised editor change it, and runs the same gate
+(lint plus the eval set) before publishing; there is no manual approval step. Publishing
+writes a new version; the agent reads the latest version with a short cache (for example
+60 s). Rollback means selecting an earlier version. The persona version is recorded in each
+trace, so a change in answer quality can be tied to a persona edit. The org defaults file
+moves to the same bucket with the data team as its only writer.
 
 ---
 
@@ -612,7 +693,7 @@ begin_turn -> pre_router -> one of:
     preference_update: ack_preference
     off_topic:         refuse
 -> finalize (mask PII) -> update_memory -> write_trace
-Any node that raises LLMUnavailable or BudgetExceeded routes to fail -> finalize.
+Any node that raises LLMUnavailable, BudgetExceeded or OrgDefaultsInvalid routes to fail -> finalize.
 ```
 
 **Model calls per turn**, as built:
@@ -635,7 +716,9 @@ Any node that raises LLMUnavailable or BudgetExceeded routes to fail -> finalize
 | Gemini 429 or 5xx | `is_retryable` in `GeminiClient` | 3 attempts on primary (2 s, 4 s waits), then fallback model; primary skipped for 60 s | Normal answer, slower | `fallback_rate`; `[fallback]` in `ria trace` |
 | Gemini 400 or other non-retryable error | Not retryable | Straight to fallback model; primary not marked down | Normal answer | `fallback_rate` |
 | Structured output unparseable | `parsed is None` | Up to 3 attempts on the same model, then fallback | Normal answer | `fallback_rate` |
-| Both models fail | `LLMUnavailable` | `fail` node, trace written with the error | "The language model is unavailable right now (rate limit or outage). Nothing was lost; please retry shortly." | `error_rate` |
+| Both models fail | `LLMUnavailable` | `fail` node, trace written with the error | "The language model is unavailable right now (rate limit or outage). Nothing was lost; please retry shortly." | `error_rate`, `outage_turns` |
+| Answer produced with the backup model | `fallback` flag on any call in the turn's ledger | `finalize` appends the note to the user-facing text only | Normal answer, then "Note: answered with the backup model." | `fallback_rate` |
+| Invalid `data/org_defaults.yaml` (bad YAML, unknown key, value out of range) | `OrgDefaultsInvalid` from `OrgDefaults.load` on the first node that needs it | `fail` node, trace written with the error | "The org defaults file is invalid: <reason>. Ask the data team to fix data/org_defaults.yaml." | `error_rate` |
 | Both models fail, user types a slash command | `pre_router` matches the command | Command node runs; no model call on the path | Normal command output (report list, report, delete confirmation, schema, rating, help) | outcome `listed`, `shown`, `rated`, `help`, `ok`, `deleted` or `cancelled` |
 | Both models fail while history needs summarising | `LLMUnavailable` in `begin_turn` | Summary skipped, messages kept, turn continues | Command output, or the model-unavailable message for free text | guard event `summary:skipped_llm_unavailable` |
 | Titling call fails on save | `LLMUnavailable` in `save_report` | Report saved, titled with the question | "Saved report #N: <question>..." | outcome `saved` |
@@ -649,7 +732,7 @@ Any node that raises LLMUnavailable or BudgetExceeded routes to fail -> finalize
 | Query above 1 GB | Dry run `bytes_cap` | End turn, no repair | "This question would scan more data than allowed... Narrow the time range or the scope of the question" | outcome `gave_up` |
 | BigQuery syntax error | `classify_error` = `syntax` | Repair; breaker not touched | Answer after repair, or give-up | `mean_repairs` |
 | BigQuery timeout, quota, unknown | `classify_error` | Repair; counts toward the breaker | Answer after repair, or give-up | `mean_repairs`, `error_rate` |
-| Warehouse down | Breaker open after 3 failures, 5 min cooldown | End turn with `circuit_open`, no query sent | "The data warehouse is not responding right now... Saved reports and the schema overview still work." (`/reports`, `/report <id>`, `/schema`) | outcome `error` |
+| Warehouse down | Breaker open after 3 failures, 5 min cooldown | End turn with `circuit_open`, no query sent | "The data warehouse is not responding right now... Saved reports and the schema overview still work." (`/reports`, `/report <id>`, `/schema`) | outcome `error`, `outage_turns` |
 | Empty result | Zero rows | One repair with a loosen-filters hint; second empty ends the turn | "The query ran but returned no rows. Your access covers ..." plus the SQL | outcome `no_data` |
 | Repair budget spent | 2 repairs used | `give_up` | "I couldn't get a working query for this after 3 attempts. What I tried: ..." | outcome `gave_up` |
 | PII-shaped text in the answer | `mask_pii` regex | Replaced with `[email]`, `[phone]`, `[address]` | Masked answer | not yet recorded |
@@ -688,20 +771,36 @@ clarification questions. The numbers are OpsFleet's question numbers.
 |---|---|---|
 | 1a | Access is by brand. The CEO sees everything. The mapping of managers to brands is ours to define. | Scope key is `products.brand` (`Settings.scope_column`). Demo users own brands in `data/users.yaml` (key `brands`); the CEO has `*`. `ria init` warns about brands not in the dataset. Seed Trio 11 is tagged `all`. |
 | 1d | Questions outside a manager's brands are out of scope. Customer-level questions (for example signups per month) are answerable, filtered to the manager's data. The CEO is unrestricted. | Orders-only and users-only SELECTs are no longer rejected for scoped users; the guard adds a semi-join through order_items and products (section 2, step 6). |
-| 2 | No company-wide churn definition. Default: no purchase in 90 days. State the definition used and let users override it. | `data/definitions.md`, read every turn into the SQL, repair and analysis prompts; answers state the definition; an inline override is used for that answer. Seed Trio 05 uses 90 days. |
-| 3 | Revenue is Complete, Shipped and Processing; Cancelled and Returned are excluded; it should be configurable. | Same definitions file. |
+| 2 | No company-wide churn definition. Default: no purchase in 90 days. State the definition used and let users override it. | `churn_window_days` in `data/org_defaults.yaml`, rendered every turn into the SQL, repair and analysis prompts; answers state the definition; an inline override is used for that answer. Seed Trio 05 uses 90 days. |
+| 3 | Revenue is Complete, Shipped and Processing; Cancelled and Returned are excluded; it should be configurable. | `revenue_statuses` in the same file. |
 | 4 | Hard delete, no recovery window; the confirmation is the safeguard. | No change. |
 | 5 | Reports are not shared; only the author views, changes or deletes them. | No change. `/report <id>` also returns only the author's own reports. There is no edit feature. |
 | 6 | Demographics only in aggregates, never per individual; define a minimum group size. | Guard Rules A and B with a minimum of 10 customers per group, for every user including the CEO (section 2, step 5). Seed Trio 01 no longer returns demographics. |
 | 8a to 8e | All five learning signals are wanted. | `/good` and `/bad` ratings and router-detected corrections, stored on the previous answer's trace and shown in `ria trace` and `ria stats` (section 4). |
 | 9 | Timings, alerting and degraded mode are ours to design. | Slash commands handled in code before the router, so reports, schema, ratings and help work with both models down (section 5). |
 
-**Open items, pending with OpsFleet's second reviewer.** Nothing is built for these yet.
+**Second round.** OpsFleet's second reviewer answered the items that were open after the
+first round, plus three questions about configuration.
 
-- 1b: distribution centers.
-- 1c: whether a manager's responsibilities (and so their brands) change.
-- 7: multi-language support.
-- 9a to 9c: specific resilience requirements.
+| # | Answer | What it changed |
+|---|---|---|
+| 1b | Brand is the only access dimension; distribution centres do not matter. | Nothing: scope was already by brand. The out-of-scope tables stay out. |
+| 1c | Responsibilities are static; read them from the users file set up for 1a. | Nothing: `data/users.yaml` is read at `ria init`. No brand changes at run time. |
+| 7 | English only. | Output language is out of the persona's scope; the lint rejects a persona that changes it (section 6). |
+| 9 | Timings, thresholds and alerting are ours to pick and justify. | Numbers unchanged; each one is justified in section 5. |
+| 9a-i | Whether to disclose a fallback-model answer is our call. | Disclosed: "Note: answered with the backup model." after the answer (section 5). |
+| 9b | A degraded mode when the warehouse is down is wanted. | Already built: the breaker ends the turn with a clear message and schema questions, reports and commands keep working. |
+| 9c-i | Users and the ops team both need to know when the agent is fully down. | The user message existed; `ria stats` gains `outage_turns` (section 7); the HLD defines the ops alert. |
+| 9c-ii | No queueing; best-effort is a reasonable direction. | The production queue is dropped from the design (section 5); the agent stays best-effort. |
+| Global preferences | Org-wide defaults (churn window, revenue statuses, minimum cohort size) owned by a data or admin team; a config file is fine, no UI; explain how user preferences layer on top. | One structured file `data/org_defaults.yaml` feeds both the guard and the prompts; `Settings.min_group_size` and `RIA_MIN_GROUP_SIZE` were removed; the layering is in section 8. |
+| QA and persona | Persona changes must pass an automated quality gate before going live; no manual approval. | `ria persona check` and `ria persona publish` with lint and a live eval gate (section 6). |
+| Persona scope | What else non-developers may configure is ours to define and justify. | The boundary in section 8: tone, emphasis, format wording, disclaimer, report header; not scope, safety, definitions, language or tools. |
+
+**Open items.** Two remain, both about who does a review step. Nothing in the code depends on
+the answer.
+
+- Who approves Golden Trio candidates (`ria golden promote`).
+- Who scores the gold set (the evaluation questions with expected answers).
 
 **Still assumed.** A human analyst reviews Golden Trio candidates before promotion, and no
 candidate influences SQL generation without that approval. Concurrency is low for the

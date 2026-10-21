@@ -120,8 +120,8 @@ identifier (`users.id`, `order_items.user_id`, `orders.user_id`, `orders.order_i
 list, outside `COUNT` or `APPROX_COUNT_DISTINCT`, and references a demographic column
 anywhere in the query is rejected. A demographic column may appear bare in a select list
 only in a SELECT that groups by it and reads a customer table (`GROUP BY ALL` is rejected).
-That SELECT gets `HAVING COUNT(DISTINCT <customer id>) >= 10` (`Settings.min_group_size`), so
-no group of fewer than 10 customers is shown.
+That SELECT gets `HAVING COUNT(DISTINCT <customer id>) >= 10` (`min_group_size` in
+`data/org_defaults.yaml`, read on every turn), so no group of fewer than 10 customers is shown.
 
 ### Relationships the agent relies on
 
@@ -290,4 +290,12 @@ to the current `turn_id` when the turn's outcome is an answer (`ok`, `no_data`, 
 | `trios` + `trio_vec` in SQLite | Trio bodies in a GCS bucket, embeddings in Vertex AI Vector Search |
 | `reports`, `user_prefs`, `traces`, `llm_ledger` | Cloud SQL (Postgres) |
 | `checkpoints`, `writes` | LangGraph Postgres checkpointer on Cloud SQL |
-| `data/persona.md`, `data/definitions.md` | versioned GCS objects with an admin page |
+| `data/persona.md`, `data/org_defaults.yaml`, `data/persona_versions/` | versioned GCS objects; the persona behind an admin page that runs the persona gate, the org defaults written by the data team |
+
+Two configuration files sit next to the store and are read on every turn, not loaded into
+it. `data/org_defaults.yaml` holds `churn_window_days` (90), `revenue_statuses` (Complete,
+Shipped, Processing) and `min_group_size` (10); it feeds the guard's HAVING threshold and
+the "Business definitions" block in the SQL and analysis prompts from one source, and an
+invalid file fails the turn with a message naming the key. `data/persona_versions/` (git-ignored)
+receives the replaced `persona.md` on every `ria persona publish`, named by UTC timestamp,
+so a persona change can be rolled back by publishing a saved version.
