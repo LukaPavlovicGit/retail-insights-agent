@@ -104,6 +104,13 @@ async def test_finalize_masks_and_appends_and_remembers_last(conn, settings):
     assert isinstance(out["messages"][0], AIMessage) and out["last_sql"] == "SELECT 1" and out["last_question"] == "q"
 
 
+async def test_finalize_sets_last_turn_id(conn, settings):
+    deps = make_deps(conn, settings)
+    state = turn_state("q", intent="schema_question", rendered="hi")
+    out = await make_finalize(deps)(state)
+    assert out["last_turn_id"] == state["turn_id"]
+
+
 async def test_finalize_without_rendered_is_error(conn, settings):
     deps = make_deps(conn, settings)
     out = await make_finalize(deps)(turn_state("q", intent="analysis"))

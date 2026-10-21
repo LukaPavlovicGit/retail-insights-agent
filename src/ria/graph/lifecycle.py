@@ -56,7 +56,8 @@ def make_finalize(deps: Deps):
             rendered = ERROR_TEXT.format(turn_id=state.get("turn_id", "?"))
             outcome = "error" if outcome in ("", "ok") else outcome
         masked, _ = mask_pii(rendered)
-        out: dict = {"rendered": masked, "outcome": outcome, "messages": [AIMessage(content=masked)]}
+        out: dict = {"rendered": masked, "outcome": outcome, "messages": [AIMessage(content=masked)],
+               "last_turn_id": state["turn_id"]}
         if state.get("intent") == "analysis" and outcome == "ok" and state.get("analysis"):
             out.update(last_question=state.get("question"), last_sql=state.get("sql"), last_analysis=state.get("analysis"))
         return out

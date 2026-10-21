@@ -13,6 +13,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
+SUCCESS_OUTCOMES = ("ok", "saved", "deleted", "cancelled", "listed", "shown", "rated", "help")
+
+
 @dataclass
 class TurnTrace:
     """Everything recorded about one turn. `node_timings`, `llm_calls` (ledger dicts), `sql_attempts` and
@@ -33,6 +36,9 @@ class TurnTrace:
     guard_events: list[str] = field(default_factory=list)
     bq_bytes: int = 0
     error: str | None = None
+    rating: int | None = None  # +1 / -1 once the user rated the answer
+    rating_note: str = ""
+    corrected: bool = False  # the user corrected this turn's answer on a later turn
 
     @property
     def tokens_in(self) -> int:
@@ -82,9 +88,11 @@ class TraceStore:
         )
         self.conn.execute(
             "INSERT OR REPLACE INTO traces (turn_id, thread_id, user_id, intent, outcome, started_at, duration_ms, "
-            "tokens_in, tokens_out, bq_bytes, fallback_used, repairs, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "tokens_in, tokens_out, bq_bytes, fallback_used, repairs, payload, rating, rating_note, corrected) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (t.turn_id, t.thread_id, t.user_id, t.intent, t.outcome, t.started_at, t.duration_ms, t.tokens_in,
-             t.tokens_out, t.bq_bytes, int(t.fallback_used), t.repairs, payload),
+             t.tokens_out, t.bq_bytes, int(t.fallback_used), t.repairs, payload, t.rating, t.rating_note,
+             int(t.corrected)),
         )
         self.conn.execute("DELETE FROM llm_ledger WHERE turn_id = ?", (t.turn_id,))
         for c in t.llm_calls:
@@ -106,7 +114,20 @@ class TraceStore:
             node_timings=p.get("node_timings", []), llm_calls=p.get("llm_calls", []),
             sql_attempts=p.get("sql_attempts", []), guard_events=p.get("guard_events", []),
             bq_bytes=r["bq_bytes"], error=p.get("error"),
+            rating=r["rating"], rating_note=r["rating_note"], corrected=bool(r["corrected"]),
         )
+
+    def set_rating(self, turn_id: str, rating: int, note: str = "") -> bool:
+        """Record a +1 / -1 rating (and optional note) on a saved turn. False when no such turn exists."""
+        cur = self.conn.execute("UPDATE traces SET rating = ?, rating_note = ? WHERE turn_id = ?", (rating, note, turn_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def set_corrected(self, turn_id: str) -> bool:
+        """Mark a saved turn as corrected by the user. False when no such turn exists."""
+        cur = self.conn.execute("UPDATE traces SET corrected = 1 WHERE turn_id = ?", (turn_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def get(self, turn_id: str) -> TurnTrace | None:
         """Load one trace by turn id, or None."""
@@ -116,10 +137,10 @@ class TraceStore:
     def stats(self, since: str | None = None) -> dict:
         """Aggregate metrics over all turns, or those started at or after the ISO timestamp `since`.
 
-        Returns `{"turns": 0}` when empty. Otherwise rates over all turns: success (outcomes ok, saved, deleted,
-        cancelled), refusal, error (error, gave_up) and fallback-model use; `no_data` counts in none of the first
+        Returns `{"turns": 0}` when empty. Otherwise rates over all turns: success (`SUCCESS_OUTCOMES`), refusal, error (error, gave_up) and fallback-model use; `no_data` counts in none of the first
         three. Also mean repairs (analysis turns only), guard rejections by check code, p50 and p95 latency,
-        mean tokens and BigQuery bytes per turn, and turn counts by intent.
+        mean tokens and BigQuery bytes per turn, counts of good and bad ratings, the correction rate (corrected
+        analysis turns / analysis turns), and turn counts by intent.
         """
         if since:
             rows = self.conn.execute("SELECT * FROM traces WHERE started_at >= ?", (since,)).fetchall()
@@ -139,7 +160,7 @@ class TraceStore:
         analysis = [t for t in traces if t.intent == "analysis"]
         return {
             "turns": n,
-            "success_rate": sum(t.outcome in ("ok", "saved", "deleted", "cancelled") for t in traces) / n,
+            "success_rate": sum(t.outcome in SUCCESS_OUTCOMES for t in traces) / n,
             "refusal_rate": sum(t.outcome == "refused" for t in traces) / n,
             "error_rate": sum(t.outcome in ("error", "gave_up") for t in traces) / n,
             "fallback_rate": sum(t.fallback_used for t in traces) / n,
@@ -149,5 +170,8 @@ class TraceStore:
             "p95_ms": _percentile(durations, 0.95),
             "mean_tokens": sum(t.tokens_in + t.tokens_out for t in traces) / n,
             "mean_bq_bytes": sum(t.bq_bytes for t in traces) / n,
+            "rated_good": sum(t.rating == 1 for t in traces),
+            "rated_bad": sum(t.rating == -1 for t in traces),
+            "correction_rate": (sum(t.corrected for t in analysis) / len(analysis)) if analysis else 0.0,
             "by_intent": dict(Counter(t.intent or "unknown" for t in traces)),
         }

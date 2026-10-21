@@ -36,6 +36,7 @@ class AgentState(TypedDict, total=False):
     last_question: str | None
     last_sql: str | None
     last_analysis: str | None
+    last_turn_id: str | None
     # turn-level (reset by begin_turn)
     turn_id: str
     started_at: str

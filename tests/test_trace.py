@@ -57,6 +57,55 @@ def test_stats(conn):
     assert st["by_intent"] == {"analysis": 3, "off_topic": 1}
 
 
+def test_set_rating_and_corrected_round_trip(conn):
+    s = TraceStore(conn)
+    s.save(make("a"))
+    assert s.get("a").rating is None and s.get("a").rating_note == "" and s.get("a").corrected is False
+    assert s.set_rating("a", -1, "wrong brand") is True
+    assert s.set_corrected("a") is True
+    t = s.get("a")
+    assert t.rating == -1 and t.rating_note == "wrong brand" and t.corrected is True
+    assert t.to_dict()["rating"] == -1 and t.to_dict()["corrected"] is True
+    assert s.set_rating("nope", 1) is False
+    assert s.set_corrected("nope") is False
+
+
+def test_stats_ratings_and_correction_rate(conn):
+    s = TraceStore(conn)
+    for i in "123":
+        s.save(make(i))
+    s.save(make("4", outcome="listed", intent="list_reports"))
+    s.set_rating("1", 1)
+    s.set_rating("2", 1)
+    s.set_rating("3", -1)
+    s.set_corrected("3")
+    st = s.stats()
+    assert st["rated_good"] == 2 and st["rated_bad"] == 1
+    assert abs(st["correction_rate"] - 1 / 3) < 1e-9
+    assert st["success_rate"] == 1.0  # "listed" counts as success
+    for o in ("shown", "rated", "help"):
+        s.save(make(f"o-{o}", outcome=o, intent="x"))
+    assert s.stats()["success_rate"] == 1.0
+
+
+def test_correction_rate_zero_without_analysis_turns(conn):
+    s = TraceStore(conn)
+    s.save(make("a", intent="off_topic"))
+    assert s.stats()["correction_rate"] == 0.0
+
+
+def test_renderers_show_rating_and_corrected(conn):
+    s = TraceStore(conn)
+    s.save(make("a"))
+    s.set_rating("a", 1)
+    s.set_corrected("a")
+    console = Console(record=True, width=100)
+    console.print(render_trace(s.get("a")))
+    console.print(render_stats(s.stats()))
+    text = console.export_text()
+    assert "rating" in text and "corrected" in text and "rated good/bad" in text and "correction_rate" in text
+
+
 def test_stats_empty(conn):
     assert TraceStore(conn).stats()["turns"] == 0
 
