@@ -152,9 +152,13 @@ async def test_finalize_discloses_fallback_model_on_answers_only(conn, settings)
     used = [{"node": "analyze", "fallback": True}]
     out = await fin(turn_state("q", intent="analysis", rendered="Answer", outcome="ok", llm_calls=used))
     assert out["rendered"] == "Answer\n\n" + FALLBACK_NOTE and out["rendered"].endswith("Note: answered with the backup model.")
-    assert out["messages"][-1].content == out["rendered"]
+    assert out["messages"][-1].content == "Answer"  # the note is for the user, never replayed to the model
     out = await fin(turn_state("/reports", rendered="Reports", outcome="listed", llm_calls=used))
     assert out["rendered"] == "Reports"
+    out = await fin(turn_state("q", intent="analysis", rendered="Model down", outcome="error", llm_calls=used))
+    assert out["rendered"] == "Model down"  # nothing was answered, so no disclosure
+    out = await fin(turn_state("/good", rendered="Thanks", outcome="rated", intent="rating", llm_calls=used))
+    assert out["rendered"] == "Thanks"
     out = await fin(turn_state("q", intent="analysis", rendered="Answer", outcome="ok", llm_calls=[{"node": "analyze", "fallback": False}]))
     assert out["rendered"] == "Answer"
 

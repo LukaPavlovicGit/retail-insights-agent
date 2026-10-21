@@ -55,10 +55,10 @@ def make_begin_turn(deps: Deps):
 
 def make_finalize(deps: Deps):
     """Node `finalize`: the single exit for every branch. Masks PII (emails, phone numbers, street addresses) in
-    `rendered` as a last line of defence, substitutes `ERROR_TEXT` if no branch produced text, appends `FALLBACK_NOTE`
-    to answer-bearing turns (`ANSWER_OUTCOMES`, not rating or schema overview) when any LLM call used the backup
-    model (command outcomes such as `listed` never get it), appends the answer to
-    `messages` as an AI message, and, for a successful analysis, records `last_question`, `last_sql` and
+    `rendered` as a last line of defence, substitutes `ERROR_TEXT` if no branch produced text, appends the answer to
+    `messages` as an AI message, then appends `FALLBACK_NOTE` to the user-facing `rendered` only, for answer-bearing
+    turns (`ANSWER_OUTCOMES` minus `error`, not rating or schema overview) when any LLM call used the backup model
+    (command outcomes such as `listed` never get it), and, for a successful analysis, records `last_question`, `last_sql` and
     `last_analysis` so "save this as a report" works on a later turn. No LLM call. Followed by `update_memory`."""
     async def finalize(state: dict) -> dict:
         rendered = state.get("rendered")
@@ -69,9 +69,11 @@ def make_finalize(deps: Deps):
         masked, _ = mask_pii(rendered)
         # Only answer-bearing turns can be rated or marked corrected later; listings, help, `/schema` and ratings leave it alone.
         answer_turn = outcome in ANSWER_OUTCOMES and state.get("intent") not in ("rating", "schema_overview")
-        if answer_turn and any(c.get("fallback") for c in state.get("llm_calls", [])):
-            masked += f"\n\n{FALLBACK_NOTE}"
+        # The note goes to the user only, not into `messages`: later prompts replay past answers verbatim and
+        # the model would learn to write the note itself. Error turns answered nothing, so they get no note.
         out: dict = {"rendered": masked, "outcome": outcome, "messages": [AIMessage(content=masked)]}
+        if answer_turn and outcome != "error" and any(c.get("fallback") for c in state.get("llm_calls", [])):
+            out["rendered"] = f"{masked}\n\n{FALLBACK_NOTE}"
         if answer_turn:
             out["last_turn_id"] = state["turn_id"]
         if state.get("intent") == "analysis" and outcome == "ok" and state.get("analysis"):
