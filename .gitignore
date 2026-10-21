@@ -6,6 +6,7 @@ ria.db
 ria.db-*
 traces.jsonl
 data/schema.json
+data/persona_versions/
 evals/results-*.json
 .pytest_cache/
 .idea/

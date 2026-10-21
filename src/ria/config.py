@@ -22,6 +22,7 @@ class Settings:
     returned and the LIMIT the guard enforces, `max_repairs` the SQL repair rounds per turn,
     `max_llm_calls_per_turn` the LLM budget per turn, `window_turns` how many recent turns go to the model
     before older ones are summarised, `scope_column` the `products` column that user scopes filter on. `embedding_dim` must match the vector table created by `db.init_schema`.
+    `persona_override` points `persona_path` at another file (used to try a candidate persona in the persona gate).
     Business defaults (churn window, revenue statuses, minimum group size) are not settings; they live in `data/org_defaults.yaml` (see `OrgDefaults`).
     """
 
@@ -41,6 +42,7 @@ class Settings:
     row_cap: int = 200
     window_turns: int = 8
     scope_column: str = "brand"
+    persona_override: Path | None = None
 
     @classmethod
     def from_env(cls, env_file: str | None = ".env") -> "Settings":
@@ -65,7 +67,7 @@ class Settings:
 
     @property
     def persona_path(self) -> Path:
-        return self.data_dir / "persona.md"
+        return self.persona_override or self.data_dir / "persona.md"
 
     @property
     def users_path(self) -> Path:

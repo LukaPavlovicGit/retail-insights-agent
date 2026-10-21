@@ -1,4 +1,4 @@
-"""Typer command line for the agent: `init`, `doctor`, `chat`, `trace`, `stats`, `golden ...` and `eval`.
+"""Typer command line for the agent: `init`, `doctor`, `chat`, `trace`, `stats`, `golden ...`, `persona ...` and `eval`.
 
 This is the top layer. It builds `Settings`, opens the database, and wires real dependencies (Gemini, the MCP
 toolbox, the SQLite checkpointer) into the graph; the testable logic lives in `bootstrap`, `graph` and `observability`.
@@ -26,6 +26,8 @@ from ria.observability.trace import TraceStore
 app = typer.Typer(help="Retail Insights Agent", no_args_is_help=True)
 golden_app = typer.Typer(help="Review Golden Trio candidates")
 app.add_typer(golden_app, name="golden")
+persona_app = typer.Typer(help="Check and publish persona changes")
+app.add_typer(persona_app, name="persona")
 console = Console()
 
 
@@ -208,6 +210,51 @@ def golden_reject(trio_id: int) -> None:
     with closing(_conn(_settings())) as conn:
         TrioStore(conn).set_status(trio_id, "rejected")
     console.print(f"rejected #{trio_id}")
+
+
+_LIVE_OPTION = typer.Option(False, "--live", help="Also run the eval set with this persona (needs credentials)")
+
+
+def _persona_gate(file: Path, live: bool) -> None:
+    """Lint `file` and, with `live`, run the eval set with it as the persona; raise `typer.Exit(1)` on any failure."""
+    from ria.evals.checks import load_cases
+    from ria.persona.gate import lint_persona, live_gate
+
+    if not file.is_file():
+        console.print(f"[red]{file} not found[/red]")
+        raise typer.Exit(1)
+    reasons = lint_persona(file.read_text(encoding="utf-8"))
+    for reason in reasons:
+        console.print(reason, markup=False)
+    if reasons:
+        raise typer.Exit(1)
+    console.print("lint passed")
+    if live:
+        settings = _settings()
+        with closing(_conn(settings)) as conn:
+            passed, summary = asyncio.run(live_gate(settings, conn, load_cases(Path("evals/questions.yaml")), file))
+        console.print(summary, markup=False)
+        if not passed:
+            raise typer.Exit(1)
+        console.print("live gate passed")
+
+
+@persona_app.command("check")
+def persona_check(file: Path, live: bool = _LIVE_OPTION) -> None:
+    """Check a candidate persona file: lint it and, with `--live`, run the eval set with it. Changes nothing."""
+    _persona_gate(file, live)
+
+
+@persona_app.command("publish")
+def persona_publish(file: Path, live: bool = _LIVE_OPTION) -> None:
+    """Run the same checks as `check`; on success save the current persona under `persona_versions/` and replace it."""
+    from ria.persona.gate import publish_persona
+
+    _persona_gate(file, live)
+    settings = _settings()
+    version = publish_persona(file, settings.persona_path, settings.data_dir / "persona_versions")
+    saved = f"previous version saved as {version}" if version else "no previous version"
+    console.print(f"published to {settings.persona_path}; {saved}", markup=False)
 
 
 @app.command("eval")
