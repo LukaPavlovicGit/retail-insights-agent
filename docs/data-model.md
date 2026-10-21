@@ -70,9 +70,9 @@ erDiagram
   products {
     INT64 id PK
     FLOAT64 cost
-    STRING category "scope key"
+    STRING category
     STRING name
-    STRING brand
+    STRING brand "scope key"
     FLOAT64 retail_price
     STRING department
     STRING sku
@@ -107,10 +107,18 @@ erDiagram
 
 | Table | One row per | Grain and notes |
 |---|---|---|
-| `users` | customer | Demographics (age, gender, state, city, country, traffic_source, created_at) may be used in aggregates. Seven columns are personal identifiers and are denied at parse time: `email`, `first_name`, `last_name`, `street_address`, `postal_code`, `latitude`, `longitude`. |
+| `users` | customer | Demographics (age, gender, state, city, country, traffic_source) may be used only in aggregates; see the demographics rules below. `created_at` is not a demographic column. Seven columns are personal identifiers and are denied at parse time: `email`, `first_name`, `last_name`, `street_address`, `postal_code`, `latitude`, `longitude`. |
 | `orders` | order | `status` is one of Cancelled, Processing, Shipped, Complete, Returned. `num_of_item` is the item count. `gender` is copied from the user. |
 | `order_items` | item sold | The fact table. `sale_price` is the revenue per item. `status` repeats the order status per item. `user_id` is denormalised from `orders`, so order_items joins to users directly. `inventory_item_id` points at the physical unit (out of scope). |
-| `products` | catalog product | `category` is the scope key: a user's allowed categories are injected as `products.category IN (...)`. `cost` vs `retail_price` gives margin. `department` is Men or Women. |
+| `products` | catalog product | `brand` is the scope key (`Settings.scope_column`, env `RIA_SCOPE_COLUMN`): a scoped user's brands are injected as `products.brand IN (...)`. `cost` vs `retail_price` gives margin. `department` is Men or Women. |
+
+**Demographics rules** (SQL guard, every user including the CEO). The demographic columns
+are `users.state`, `city`, `country`, `age`, `gender` and `traffic_source`. A query that
+returns a customer id (`users.id`, `order_items.user_id`, `orders.user_id`) in any select
+list, outside `COUNT` or `APPROX_COUNT_DISTINCT`, and references a demographic column
+anywhere in the query is rejected. A SELECT that groups by a demographic column gets
+`HAVING COUNT(DISTINCT <customer id>) >= 10` (`Settings.min_group_size`), so no group of fewer
+than 10 customers is shown.
 
 ### Relationships the agent relies on
 
@@ -119,12 +127,18 @@ erDiagram
 | `order_items.order_id` | `orders.order_id` | many to one | order-level metrics (orders, AOV, status funnel) |
 | `order_items.user_id` | `users.id` | many to one | customer metrics, demographics, churn proxy |
 | `order_items.product_id` | `products.id` | many to one | category, brand, margin; the scope predicate |
-| `orders.user_id` | `users.id` | many to one | signups vs orders (unrestricted users only) |
+| `orders.user_id` | `users.id` | many to one | signups vs orders |
 
-The join paths given to the model in the schema digest are exactly these four. For a scoped
-user every SELECT that reads any dataset table must involve `products` or `order_items`; if a
-query reads `order_items` without `products`, the guard adds
-`INNER JOIN products AS ria_p ON ria_p.id = oi.product_id` and the category predicate.
+The schema digest the model sees lists the first three as join keys. For a scoped user the
+guard filters every SELECT that reads a dataset table to the user's brands:
+
+- `products` in the SELECT: `products.brand IN (...)`.
+- `order_items` without `products`: the guard adds
+  `INNER JOIN products AS ria_p ON ria_p.id = oi.product_id` and the brand predicate.
+- Only `orders` and/or `users`: a semi-join, `orders.order_id IN (...)` or `users.id IN (...)`
+  over `order_items` joined to `products` and filtered to the user's brands. The outer
+  query keeps its grain, so "signups per month" counts customers who bought one of the
+  user's brands.
 
 ### Values worth knowing
 
@@ -132,7 +146,10 @@ query reads `order_items` without `products`, the guard adds
   Revenue in the seed Trios excludes Cancelled and Returned.
 - `users.traffic_source`: Facebook, Search, Email, Organic, Display.
 - `products.department`: Men, Women. `products.category`: about 26 values (Jeans, Swim,
-  Accessories, Tops & Tees, ...). `ria init` validates `data/users.yaml` against the live list.
+  Accessories, Tops & Tees, ...). `products.brand`: the scope key; the demo users own Levi's,
+  Carhartt, Dockers and Wrangler (alice) and Columbia, Volcom, Quiksilver and Speedo (bob).
+  `ria init` checks `data/users.yaml` against `SELECT DISTINCT brand` and warns about unknown
+  brands.
 - `events.event_type` (out of scope): home, department, product, cart, purchase, cancel.
 
 ### The three out-of-scope tables
@@ -158,7 +175,7 @@ erDiagram
     TEXT id PK "demo user id (alice)"
     TEXT name
     TEXT role
-    TEXT categories "JSON list or [*]"
+    TEXT scope "JSON list of brands or [*]"
   }
   user_prefs {
     TEXT user_id PK
@@ -185,7 +202,7 @@ erDiagram
     TEXT question
     TEXT sql
     TEXT report
-    TEXT tags "JSON: categories or [all]"
+    TEXT tags "JSON: brands or [all]"
     TEXT status "promoted | pending | rejected"
     TEXT source "seed | user"
     TEXT author
@@ -209,6 +226,9 @@ erDiagram
     INTEGER fallback_used
     INTEGER repairs
     TEXT payload "JSON: node timings, llm calls, sql attempts, guard events, error"
+    INTEGER rating "+1, -1 or null"
+    TEXT rating_note
+    INTEGER corrected "0 or 1"
   }
   llm_ledger {
     INTEGER id PK
@@ -240,24 +260,30 @@ erDiagram
 
 | Table | Written by | Read by | Notes |
 |---|---|---|---|
-| `users` | `ria init` from `data/users.yaml` | `ria chat --user` | `categories` of `["*"]` means unrestricted and is read back as `None`. |
+| `users` | `ria init` from `data/users.yaml` | `ria chat --user` | `scope` holds the YAML key `brands` as JSON. `["*"]` (the CEO) means unrestricted and is read back as `None`. |
 | `user_prefs` | `update_memory` and `ack_preference` nodes | every prompt and the renderer | One row per user; created on first change. |
-| `reports` | `save_report` via the MCP tool `reports_save` | `resolve_targets`, `reports_search`, `reports_delete` | Every read and delete is filtered by `user_id`. Body is masked before storage. |
+| `reports` | `save_report` via the MCP tool `reports_save` | `resolve_targets` and `list_reports` (`reports_search`), `show_report` (`reports_get`), `confirm_delete` (`reports_delete`) | Every read and delete is filtered by `user_id`, so only the author sees or deletes a report. Body is masked before storage. Deletion is a hard delete. |
 | `trios` | `ria init` (seeds), `save_report` (pending candidates), `ria golden promote/reject` | `retrieve_trios` | Only `status = promoted` is retrievable. |
 | `trio_vec` | `ria init` for any Trio without a vector | `TrioStore.search` (KNN, cosine) | sqlite-vec `vec0` virtual table; `trio_id` matches `trios.id`. |
-| `traces`, `llm_ledger` | `write_trace` at the end of every graph turn | `ria trace`, `ria stats`, `ria eval` | One trace per turn; one ledger row per model call. |
-| `checkpoints`, `writes` | LangGraph `AsyncSqliteSaver` after every node | resume, `--thread`, the delete confirmation | Managed by LangGraph; keyed by `thread_id`. The pending `interrupt()` lives here. |
+| `traces`, `llm_ledger` | `write_trace` at the end of every graph turn; `rating` and `rating_note` by the `rating` node (`/good`, `/bad`); `corrected` by the router when it flags a correction | `ria trace`, `ria stats`, `ria eval` | One trace per turn; one ledger row per model call. A rating or correction updates the trace of the previous answer, not the current turn. |
+| `checkpoints`, `writes` | LangGraph `AsyncSqliteSaver` after every node | resume, `--thread`, the delete confirmation | Managed by LangGraph; keyed by `thread_id`. The pending `interrupt()` lives here, and so does `last_turn_id` (below). |
 
 Identifiers that tie the store together: `user_id` (who), `thread_id` (which conversation),
 `turn_id` (which question). A saved report carries both `user_id` and `thread_id`, which is how
 "delete the reports we made in this conversation" resolves.
 
+`last_turn_id` is conversation state in the checkpoint, not a table column. `finalize` sets it
+to the current `turn_id` when the turn's outcome is an answer (`ok`, `no_data`, `gave_up`,
+`refused`, `error`, `saved`, `deleted`, `cancelled`) and the turn is not itself a rating.
+`/good`, `/bad` and a router-detected correction update the `traces` row with that id.
+`/reports`, `/report <id>` and `/help` do not change it.
+
 ## 3. Production mapping
 
 | Prototype | Production |
 |---|---|
-| BigQuery public dataset, queried from your project | BigQuery with authorized views per category and a read-only service account |
+| BigQuery public dataset, queried from your project | BigQuery with authorized views per brand set and a read-only service account |
 | `trios` + `trio_vec` in SQLite | Trio bodies in a GCS bucket, embeddings in Vertex AI Vector Search |
 | `reports`, `user_prefs`, `traces`, `llm_ledger` | Cloud SQL (Postgres) |
 | `checkpoints`, `writes` | LangGraph Postgres checkpointer on Cloud SQL |
-| `data/persona.md` | versioned GCS object with an admin page |
+| `data/persona.md`, `data/definitions.md` | versioned GCS objects with an admin page |

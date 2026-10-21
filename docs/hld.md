@@ -6,14 +6,17 @@ The Retail Insights Agent is a chat assistant for non-technical retail executive
 questions about sales, products, customers, returns and delivery in plain English. The agent
 writes BigQuery SQL over the public `bigquery-public-data.thelook_ecommerce` dataset, runs it
 read-only, explains the result, and can save and delete reports. Each user sees only the
-product categories assigned to them. Personal columns (names, email, address, postal code,
-coordinates) are never queried and never appear in the schema the model sees. A regex
+product brands assigned to them; the CEO sees everything. Personal columns (names, email,
+address, postal code, coordinates) are never queried and never appear in the schema the
+model sees. Demographics (state, city, country, age, gender, traffic source) appear only in
+aggregates over at least 10 customers, never next to an individual customer. A regex
 masker runs as a last pass on every answer, and saved report bodies and Trio candidates are
 masked before storage.
 
 This repository contains a runnable CLI prototype and this production design. The prototype
-implements safety and PII masking, per-user category scope, confirmation before report
-deletion, resilience to model and warehouse failures, and per-turn tracing. It also has thin
+implements safety and PII masking, per-user brand scope, confirmation before report
+deletion, resilience to model and warehouse failures (including slash commands that work
+with no model), ratings and corrections on answers, and per-turn tracing. It also has thin
 working versions of the Golden Bucket (retrieved example queries with a promotion command),
 user preference memory, an evaluation runner, and a hot-reloaded persona file. Every Google
 Cloud service in this document other than BigQuery is design only.
@@ -43,10 +46,10 @@ flowchart LR
     REP["Reports repository"]
   end
   subgraph Data
-    BQ[("BigQuery<br/>thelook_ecommerce<br/>authorized views per category")]
+    BQ[("BigQuery<br/>thelook_ecommerce<br/>authorized views per brand set")]
     PG[("Cloud SQL Postgres<br/>checkpoints, reports, prefs")]
     VEC[("Vertex AI Vector Search<br/>Trio embeddings")]
-    GCS[("GCS bucket<br/>Golden Trios, persona.md")]
+    GCS[("GCS bucket<br/>Golden Trios, persona.md,<br/>definitions.md")]
   end
   subgraph AI["Vertex AI"]
     GEM["Gemini 3.8 Flash<br/>fallback 3.5 Flash-Lite"]
@@ -85,14 +88,16 @@ How the prototype maps onto this picture:
 | BigQuery with authorized views | Direct read of the public dataset; scope enforced by SQL rewrite in `src/ria/guards/sql_guard.py` |
 | Cloud SQL Postgres | One SQLite file, `ria.db` (`src/ria/db.py`), plus LangGraph's SQLite checkpointer |
 | Vertex AI Vector Search | sqlite-vec `vec0` table `trio_vec` in the same SQLite file |
-| GCS bucket of Trios and persona | `data/golden_trios/*.yaml` and `data/persona.md` |
+| GCS bucket of Trios, persona and definitions | `data/golden_trios/*.yaml`, `data/persona.md` and `data/definitions.md` |
 | Vertex AI Gemini | Gemini API (AI Studio key) through `langchain-google-genai` and `google-genai` |
 | Cloud Logging, Trace, LangSmith | `traces` and `llm_ledger` tables, `traces.jsonl`, `ria trace`, `ria stats`; LangSmith if its env vars are set |
-| Scheduler job and admin page | `ria golden list / promote / reject`; editing `data/persona.md` by hand |
+| Scheduler job and admin page | `ria golden list / promote / reject`; editing `data/persona.md` and `data/definitions.md` by hand |
 
 The three logical subgraphs (router, analysis, library) are node groups inside one compiled
 LangGraph `StateGraph` in the prototype (modules `graph/router.py`, `graph/analysis.py`,
-`graph/library.py`, `graph/schema_qa.py`). In production the graph stays one service; the part that would split
+`graph/library.py`, `graph/schema_qa.py`). A `pre_router` node (`graph/prerouter.py`) sits
+in front of the router and sends slash commands straight to their nodes without a model
+call. In production the graph stays one service; the part that would split
 out is the tool service, which already sits behind the MCP boundary.
 
 ## 3. One analysis turn
@@ -106,11 +111,12 @@ sequenceDiagram
   participant M as MCP tool service
   participant B as BigQuery
   U->>G: "Why are Texas customers underspending vs California?"
+  Note over G: pre_router: not a slash command, continue to router
   G->>L: router (structured output), intent=analysis
   G->>L: embed question (gemini-embedding-001)
   G->>V: KNN top 3 promoted Trios in scope
   G->>L: generate_sql (schema digest + Trios as worked examples)
-  G->>G: guard_sql: SELECT-only, dataset, PII, inject category scope, LIMIT
+  G->>G: guard_sql: SELECT-only, dataset, PII, demographics, inject brand scope, LIMIT
   G->>M: bq_dry_run(sql)
   M->>B: dry run
   B-->>M: bytes estimate
@@ -124,7 +130,7 @@ sequenceDiagram
     G->>G: guard_sql again
     G->>M: bq_dry_run, then bq_query
   end
-  G->>L: analyze rows (persona, prefs, Trio reports as style)
+  G->>L: analyze rows (persona, definitions, prefs, Trio reports as style)
   G->>G: render per prefs, mask PII in finalize, write trace
   G-->>U: answer
 ```
@@ -140,7 +146,9 @@ without a trace row; this is a known gap (see section 8 and technical-design sec
 ```mermaid
 stateDiagram-v2
   [*] --> begin_turn
-  begin_turn --> router
+  begin_turn --> pre_router
+  pre_router --> resolve_targets: /delete command, no model call
+  pre_router --> router: plain text
   router --> resolve_targets: intent is report_delete
   resolve_targets --> finalize: no matches or unclear filter
   resolve_targets --> confirm_delete: candidates found, own reports only
@@ -157,7 +165,10 @@ stateDiagram-v2
 
 `paused` is not a graph node. It is the state LangGraph keeps in the checkpointer between
 the `interrupt()` call and the `Command(resume=...)` that continues the thread. Because it
-lives in the checkpoint, a pending deletion survives a process restart.
+lives in the checkpoint, a pending deletion survives a process restart. The `/delete`
+command reaches the same `resolve_targets` node with the filter parsed in code, so deletion
+with confirmation works with both models down. Deletion is a hard delete: OpsFleet confirmed
+that the confirmation is the safeguard and no recovery window is needed.
 
 ## 5. Components and chosen services
 
@@ -171,29 +182,30 @@ lives in the checkpoint, a pending deletion survives a process restart.
 | Vector store | sqlite-vec `vec0`, cosine distance | Vertex AI Vector Search (or BigQuery `VECTOR_SEARCH` at small scale) | Real KNN with no server locally; managed index with versioned deploys in production |
 | Relational state | SQLite file `ria.db` | Cloud SQL for Postgres | Portable locally; Postgres has a LangGraph checkpointer and handles concurrent writers |
 | Tool protocol | FastMCP over stdio, spawned by the CLI | FastMCP over streamable HTTP on its own Cloud Run service | Clear permission boundary; adding a capability means adding a tool |
-| Data warehouse | BigQuery public dataset, read-only queries | BigQuery with authorized views per category | Dataset is given by the assignment; views move scope enforcement into IAM |
+| Data warehouse | BigQuery public dataset, read-only queries | BigQuery with authorized views per brand set | Dataset is given by the assignment; views move scope enforcement into IAM |
 | Secrets | `.env` file (git-ignored) | Secret Manager mounted into Cloud Run | No keys in code or images |
 | Tracing | SQLite `traces` + `llm_ledger`, `traces.jsonl`, optional LangSmith | Cloud Logging + Cloud Trace, LangSmith or Langfuse | Per-turn debugging locally; fleet-level alerting in production |
-| Persona storage | `data/persona.md`, read every turn | Versioned GCS object edited through an admin page | Non-developers change tone without a deploy |
+| Persona and definitions storage | `data/persona.md` and `data/definitions.md`, read every turn | Versioned GCS objects edited through an admin page | Non-developers change tone and the churn and revenue definitions without a deploy |
 | Trio review job | `ria golden list / promote / reject` | Weekly Cloud Scheduler job plus a reviewer page | A human approves every new example before it influences SQL |
-| Identity | `--user` flag, users in `data/users.yaml` | Google Identity through API Gateway; groups map to categories | Identity drives scope; the prototype fakes only the login |
+| Identity | `--user` flag, users and their brands in `data/users.yaml` | Google Identity through API Gateway; groups map to brands | Identity drives scope; the prototype fakes only the login |
 
 ## 6. Data stores and what lives where
 
 | Store | Purpose | Key columns or content | Production home |
 |---|---|---|---|
 | LangGraph checkpoint tables | Conversation state per `thread_id`, including a paused delete | Managed by `langgraph-checkpoint-sqlite` | Cloud SQL (Postgres checkpointer) |
-| `users` | Demo identities, loaded from `data/users.yaml` by `ria init` | `id`, `name`, `role`, `categories` (JSON, `["*"]` = all) | Identity provider groups plus a category mapping table |
+| `users` | Demo identities, loaded from `data/users.yaml` by `ria init` | `id`, `name`, `role`, `scope` (JSON list of brands from the YAML key `brands`, `["*"]` = all) | Identity provider groups plus a brand mapping table |
 | `user_prefs` | Long-term answer preferences | `user_id`, `format` (table/bullets/prose), `depth` (brief/standard/deep), `charts`, `notes`, `brevity_streak`, `updated_at` | Cloud SQL |
 | `reports` | Saved reports library | `id`, `user_id`, `thread_id`, `title`, `question`, `sql`, `body`, `tags`, `created_at` | Cloud SQL |
 | `trios` | Golden Trios and pending candidates | `id`, `question`, `sql`, `report`, `tags`, `status` (promoted/pending/rejected), `source` (seed/user), `author`, `created_at` | Trio documents in GCS, metadata in Cloud SQL |
 | `trio_vec` | Embeddings of `trios.question` | `trio_id`, `embedding float[768]`, cosine distance | Vertex AI Vector Search index |
-| `traces` | One row per turn | `turn_id`, `thread_id`, `user_id`, `intent`, `outcome`, `started_at`, `duration_ms`, `tokens_in`, `tokens_out`, `bq_bytes`, `fallback_used`, `repairs`, `payload` (JSON) | Cloud Logging (structured) and BigQuery log sink |
+| `traces` | One row per turn | `turn_id`, `thread_id`, `user_id`, `intent`, `outcome`, `started_at`, `duration_ms`, `tokens_in`, `tokens_out`, `bq_bytes`, `fallback_used`, `repairs`, `payload` (JSON), `rating`, `rating_note`, `corrected` | Cloud Logging (structured) and BigQuery log sink |
 | `llm_ledger` | One row per model call | `turn_id`, `node`, `model`, `tokens_in`, `tokens_out`, `latency_ms`, `fallback` | Same as traces |
 | `traces.jsonl` | Append-only copy of each trace | Full trace as JSON | Replaced by Cloud Logging |
 | `data/schema.json` | Live BigQuery schema cached by `ria init` | Column names and types for the four tables | Built at deploy time |
 | `data/golden_trios/*.yaml` | 15 seed Trios | `question`, `sql`, `report`, `tags`, `author`, `created_at` | GCS bucket |
 | `data/persona.md` | Tone and emphasis instructions | Free Markdown | Versioned GCS object |
+| `data/definitions.md` | Business definitions (churn 90 days; revenue statuses) | Free Markdown | Versioned GCS object |
 
 ## 7. Extension points
 
@@ -248,8 +260,9 @@ provisioned throughput and a queue in front of the agent when quota is near its 
 | Dependency down | Behaviour |
 |---|---|
 | Gemini primary model | 3 attempts with backoff, then the fallback model; primary skipped for 60 s afterwards |
-| Both Gemini models | Turn ends with "The language model is unavailable right now..."; the trace records the error |
-| BigQuery | Classified error; after 3 failures the circuit opens for 5 minutes and the agent says the data source is unavailable; schema questions, saving and deleting reports keep working |
+| Both Gemini models | Free-text turns end with "The language model is unavailable right now..."; the trace records the error. Slash commands (`/reports`, `/report <id>`, `/delete <filter>` with its confirmation, `/schema`, `/good`, `/bad`, `/help`) keep working because `pre_router` handles them with no model call. `begin_turn` skips history summarisation instead of failing the turn. |
+| BigQuery | Classified error; after 3 failures the circuit opens for 5 minutes and the agent says the data source is unavailable; schema questions, saving and deleting reports, and all slash commands keep working |
+| BigQuery and both Gemini models | Same as both models down: slash commands work (none of them queries BigQuery; `/schema` uses the schema cached at `ria init`), free text gets the model-unavailable message |
 | Vector store | Production: analysis continues without worked examples (lower SQL quality, still guarded). Prototype: the store is in the local SQLite file, so it fails only with the database |
 | Embedding API | The `retrieve_trios` node catches the exception and the turn continues without examples; a `retrieval:failed:<ExceptionType>` guard event is recorded in the trace |
 | Tool service | Prototype: same as the embedding case. Production: Cloud Run restarts the tool service and the agent retries the tool call once |

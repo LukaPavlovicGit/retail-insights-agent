@@ -16,7 +16,7 @@ sqlite-vec.
   analysis turn, the delete confirmation flow, component choices, and non-functional notes.
 - [docs/technical-design.md](docs/technical-design.md): one section per assignment
   requirement with the module and test that implement it, the error handling matrix, and
-  the assumptions.
+  the client's answers with what each one changed.
 
 ## Prerequisites
 
@@ -95,7 +95,7 @@ After each answer the CLI prints `[turn <turn_id> · <outcome>]`.
 
 ```bash
 uv run ria trace <turn_id>      # nodes, model calls, SQL attempts, guard events for one turn
-uv run ria stats                # success, refusal, error and fallback rates, repairs, latency
+uv run ria stats                # success, refusal, error and fallback rates, repairs, latency, ratings, correction rate
 uv run ria stats --since 2026-10-16T00:00:00
 ```
 
@@ -151,14 +151,25 @@ turn ends with "The language model is unavailable right now" and the conversatio
 continues. An analysis turn makes 3 to 5 model calls and 1 embedding call, so a few
 questions per minute is the practical rate on the free tier.
 
-## Assumptions
+## Client answers
 
-1. "Products related to him" means a set of product categories per user.
-2. Churn is approximated as customers with no order in the last 90 days.
-3. Aggregated demographics (state, city, age band, gender, traffic source) may appear in
-   answers; names, email, street address, postal code and coordinates may not.
-4. A human analyst reviews Golden Trio candidates before promotion.
-5. Low concurrency for the prototype; production sizing is in the HLD.
+OpsFleet answered the clarification questions after the first version. Details are in
+[technical-design.md section 13](docs/technical-design.md#13-client-answers-and-open-items).
+
+| Question | Answer | What it changed |
+|---|---|---|
+| Which products does a manager see? | Their brands; the CEO sees all | Scope key is `products.brand`; demo users own brands |
+| Customer-level questions for a manager? | Answerable, filtered to their data | Users-only and orders-only queries are scoped by a semi-join instead of refused |
+| Churn definition? | No purchase in 90 days, overridable | `data/definitions.md`, read every turn; answers state the definition used |
+| Revenue definition? | Complete, Shipped, Processing | Same file |
+| Demographics? | Aggregates only, never per person | Guard rejects ids next to demographics; groups need at least 10 customers |
+| Delete and sharing? | Hard delete; reports are private to the author | No change |
+| Learning signals? | All five | `/good`, `/bad` ratings and correction tracking on traces |
+| Degraded mode? | Ours to design | Slash commands work with no language model |
+
+Open items, pending with OpsFleet's second reviewer: distribution centers (1b), whether
+responsibilities change (1c), multi-language support (7), and specific resilience
+requirements (9a to 9c).
 
 ## Repository layout
 
@@ -166,6 +177,7 @@ questions per minute is the practical rate on the free tier.
 data/
   golden_trios/*.yaml   15 seed Trios (question, SQL, analyst report, tags)
   persona.md            tone and instructions, read every turn
+  definitions.md        churn and revenue definitions, read every turn
   users.yaml            demo users and their brands
 docs/
   hld.md                production architecture and diagrams
@@ -179,11 +191,13 @@ src/ria/
   db.py                 SQLite schema and connection with sqlite-vec loaded
   tools.py              MCP client toolbox (stdio subprocess) and a fake for tests
   graph/                LangGraph state, nodes, prompts, and build_graph
+    commands.py         slash-command parsing and the /help text
+    prerouter.py        pre_router node: commands skip the LLM router
   guards/               SQL guard, PII masker, schema digest
   llm/                  Gemini client with retry and fallback; scripted fake
   golden/               Trio loader, embedder, sqlite-vec store, retrieval
   memory/prefs.py       preference extraction and storage
-  persona/loader.py     persona file loader
+  persona/loader.py     persona and definitions file loader
   mcp_server/           FastMCP server, BigQuery runner with circuit breaker, report store
   observability/        trace store, stats, trace renderer
   evals/                eval checks and runner
@@ -194,14 +208,14 @@ tests/                  pytest suite, offline
 
 | Area | In the prototype | Design only (see docs) |
 |---|---|---|
-| Safety and PII | SQL guard, category scope rewrite, output masker, off-topic refusal | Authorized views, DLP API pass, least-privilege service account |
-| Report deletion | Interrupt-based confirmation that survives a restart | Confirmation button in a chat UI, audit log, soft delete |
-| Resilience | Retry and fallback, call budget, repair loop, byte cap, timeout, circuit breaker | Provisioned throughput, regional failover, request queue |
+| Safety and PII | SQL guard, brand scope rewrite, demographics rules, output masker, off-topic refusal | Authorized views, DLP API pass, least-privilege service account |
+| Report deletion | Interrupt-based confirmation that survives a restart; hard delete | Confirmation button in a chat UI, audit log |
+| Resilience | Retry and fallback, call budget, repair loop, byte cap, timeout, circuit breaker, slash commands with no model | Provisioned throughput, regional failover, request queue |
 | Observability | Per-turn traces, `ria trace`, `ria stats`, optional LangSmith | Cloud Logging and Trace, alerts |
 | Golden Bucket | Seed Trios, sqlite-vec retrieval, candidate promotion commands | GCS bucket, Vertex AI Vector Search, weekly review job |
-| Learning | Regex preference memory, Trio candidates from saved reports | Eval growth from traced failures, prompt-regression runs |
-| Evaluation | 24-case eval with deterministic checks and an LLM judge | CI gate, thumbs ratings, executive review sessions |
-| Persona | `data/persona.md` hot reload | Versioned GCS object with an admin page and rollback |
+| Learning | Regex preference memory, Trio candidates from saved reports, `/good` and `/bad` ratings, correction tracking | Eval growth from traced failures, prompt-regression runs |
+| Evaluation | 24-case eval with deterministic checks and an LLM judge | CI gate, rating buttons in a chat UI, executive review sessions |
+| Persona and definitions | `data/persona.md` and `data/definitions.md` hot reload | Versioned GCS objects with an admin page and rollback |
 | Not built | | Web UI, real identity, charts, email delivery, web search |
 
 ## Example run
