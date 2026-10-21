@@ -106,6 +106,21 @@ def test_renderers_show_rating_and_corrected(conn):
     assert "rating" in text and "corrected" in text and "rated good/bad" in text and "correction_rate" in text
 
 
+def test_stats_outage_turns(conn):
+    s = TraceStore(conn)
+    down = make("down", outcome="error")
+    down.error = "LLMUnavailable: x"
+    open_ = make("open", outcome="error")
+    open_.sql_attempts = [{"sql": "..", "error": "e", "kind": "circuit_open", "row_count": 0, "bytes": 0}]
+    s.save(down)
+    s.save(open_)
+    s.save(make("fine"))
+    assert s.stats()["outage_turns"] == 2
+    console = Console(record=True, width=100)
+    console.print(render_stats(s.stats()))
+    assert "outage_turns" in console.export_text()
+
+
 def test_stats_empty(conn):
     assert TraceStore(conn).stats()["turns"] == 0
 

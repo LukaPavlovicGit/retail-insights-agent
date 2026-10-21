@@ -39,6 +39,15 @@ async def test_analysis_happy_path(conn, settings):
     assert "IN ('Levi\\'s', 'Carhartt', 'Dockers', 'Wrangler')" in tb.calls[-1][1]["sql"]
 
 
+async def test_invalid_org_defaults_goes_through_error_path(conn, settings):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.org_defaults_path.write_text("min_group_size: 0\n")
+    app, deps = app_for(conn, settings, {"router": [ANALYSIS], "generate_sql": [SqlPlan(sql=GOOD_SQL)]})
+    r = await run_turn(app, ALICE, "t1", "which category leads revenue?", new_turn_id=lambda: "turn-od")
+    assert r.outcome == "error" and "org defaults file is invalid" in r.rendered and "min_group_size" in r.rendered
+    assert deps.trace_store.get("turn-od") is not None
+
+
 async def test_repair_loop_recovers(conn, settings):
     tb = FakeToolBox({"bq_query": [BAD_QUERY, OK_QUERY]})
     app, deps = app_for(conn, settings, {"router": [ANALYSIS], "generate_sql": [SqlPlan(sql=GOOD_SQL)], "repair_sql": [SqlPlan(sql=GOOD_SQL)], "analyze": ["Fixed."]}, tb)

@@ -12,14 +12,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from ria.config import Settings
+from ria.config import OrgDefaults, Settings, render_definitions
 from ria.golden.embed import Embedder, FakeEmbedder
 from ria.golden.store import TrioStore
 from ria.guards.schema import load_schema, schema_digest
 from ria.llm.client import LLMClient
 from ria.memory.prefs import PrefsStore
 from ria.observability.trace import TraceStore
-from ria.persona.loader import load_definitions, load_persona
+from ria.persona.loader import load_persona
 from ria.tools import ToolBox
 
 
@@ -53,9 +53,13 @@ class Deps:
         """Persona text for prompts, re-read from disk on each call so edits to persona.md apply without a restart."""
         return load_persona(self.settings.persona_path)
 
+    def org_defaults(self) -> OrgDefaults:
+        """Org-wide defaults (churn window, revenue statuses, minimum group size), re-read from disk on each call like `persona`."""
+        return OrgDefaults.load(self.settings.org_defaults_path)
+
     def definitions(self) -> str:
-        """Business definitions (churn, revenue, ...) for prompts, re-read from disk on each call like `persona`."""
-        return load_definitions(self.settings.definitions_path)
+        """Business definitions (churn, revenue, ...) for prompts, rendered from `org_defaults`."""
+        return render_definitions(self.org_defaults())
 
     @classmethod
     def for_tests(cls, conn, settings, llm, toolbox, embedder=None) -> "Deps":

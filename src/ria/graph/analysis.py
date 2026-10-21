@@ -90,6 +90,7 @@ def make_generate_sql(deps: Deps):
         system = SQL_SYSTEM.format(
             persona=ctx["persona"], user_name=ctx["user_name"], user_role=ctx["user_role"], scope=ctx["scope"],
             summary_block=ctx["summary_block"], schema_text=deps.schema_text, definitions=ctx["definitions"],
+            revenue_statuses=ctx["revenue_statuses"],
             examples=_examples(state.get("retrieved_trios", []), with_sql=True),
         )
         res, calls = await call_llm(deps, state, node="generate_sql", system=system, messages=window(state, deps), schema=SqlPlan)
@@ -109,7 +110,7 @@ def make_guard_sql(deps: Deps):
         attempts = list(state.get("sql_attempts", []))
         r = guard_sql(sql, scope=state["user"]["scope"], scope_column=deps.settings.scope_column,
                       dataset=deps.settings.dataset, row_cap=deps.settings.row_cap, schema=deps.schema,
-                      min_group_size=deps.settings.min_group_size)
+                      min_group_size=deps.org_defaults().min_group_size)
         events += r.events
         if not r.ok:
             attempts.append(_attempt(sql, r.reason, "guard"))

@@ -49,7 +49,7 @@ flowchart LR
     BQ[("BigQuery<br/>thelook_ecommerce<br/>authorized views per brand set")]
     PG[("Cloud SQL Postgres<br/>checkpoints, reports, prefs")]
     VEC[("Vertex AI Vector Search<br/>Trio embeddings")]
-    GCS[("GCS bucket<br/>Golden Trios, persona.md,<br/>definitions.md")]
+    GCS[("GCS bucket<br/>Golden Trios, persona.md,<br/>org_defaults.yaml")]
   end
   subgraph AI["Vertex AI"]
     GEM["Gemini 3.8 Flash<br/>fallback 3.5 Flash-Lite"]
@@ -88,10 +88,10 @@ How the prototype maps onto this picture:
 | BigQuery with authorized views | Direct read of the public dataset; scope enforced by SQL rewrite in `src/ria/guards/sql_guard.py` |
 | Cloud SQL Postgres | One SQLite file, `ria.db` (`src/ria/db.py`), plus LangGraph's SQLite checkpointer |
 | Vertex AI Vector Search | sqlite-vec `vec0` table `trio_vec` in the same SQLite file |
-| GCS bucket of Trios, persona and definitions | `data/golden_trios/*.yaml`, `data/persona.md` and `data/definitions.md` |
+| GCS bucket of Trios, persona and org defaults | `data/golden_trios/*.yaml`, `data/persona.md` and `data/org_defaults.yaml` |
 | Vertex AI Gemini | Gemini API (AI Studio key) through `langchain-google-genai` and `google-genai` |
 | Cloud Logging, Trace, LangSmith | `traces` and `llm_ledger` tables, `traces.jsonl`, `ria trace`, `ria stats`; LangSmith if its env vars are set |
-| Scheduler job and admin page | `ria golden list / promote / reject`; editing `data/persona.md` and `data/definitions.md` by hand |
+| Scheduler job and admin page | `ria golden list / promote / reject`; `ria persona check / publish`; editing `data/org_defaults.yaml` by hand |
 
 The three logical subgraphs (router, analysis, library) are node groups inside one compiled
 LangGraph `StateGraph` in the prototype (modules `graph/router.py`, `graph/analysis.py`,
@@ -139,7 +139,7 @@ Node names in the diagram are the real node names in `src/ria/graph/build.py`. A
 with `finalize -> update_memory -> write_trace` on every graph path, including refusals,
 give-ups, and model outages (`LLMUnavailable`, `BudgetExceeded`), so each of those turns
 produces a trace row. Other exceptions escape the graph and are caught by the CLI loop
-without a trace row; this is a known gap (see section 8 and technical-design section 11).
+without a trace row; this is a known gap (see section 9 and technical-design section 11).
 
 ## 4. Report deletion with confirmation
 
@@ -185,7 +185,7 @@ that the confirmation is the safeguard and no recovery window is needed.
 | Data warehouse | BigQuery public dataset, read-only queries | BigQuery with authorized views per brand set | Dataset is given by the assignment; views move scope enforcement into IAM |
 | Secrets | `.env` file (git-ignored) | Secret Manager mounted into Cloud Run | No keys in code or images |
 | Tracing | SQLite `traces` + `llm_ledger`, `traces.jsonl`, optional LangSmith | Cloud Logging + Cloud Trace, LangSmith or Langfuse | Per-turn debugging locally; fleet-level alerting in production |
-| Persona and definitions storage | `data/persona.md` and `data/definitions.md`, read every turn | Versioned GCS objects edited through an admin page | Non-developers change tone and the churn and revenue definitions without a deploy |
+| Persona and org defaults storage | `data/persona.md` (published through `ria persona publish`, previous versions in `data/persona_versions/`) and `data/org_defaults.yaml`, both read every turn | Versioned GCS objects; the persona edited through an admin page that runs the same gate, the org defaults written by the data team | A business lead changes tone and the data team changes the churn and revenue definitions, neither with a deploy (section 7) |
 | Trio review job | `ria golden list / promote / reject` | Weekly Cloud Scheduler job plus a reviewer page | A human approves every new example before it influences SQL |
 | Identity | `--user` flag, users and their brands in `data/users.yaml` | Google Identity through API Gateway; groups map to brands | Identity drives scope; the prototype fakes only the login |
 
@@ -204,10 +204,39 @@ that the confirmation is the safeguard and no recovery window is needed.
 | `traces.jsonl` | Append-only copy of each trace | Full trace as JSON | Replaced by Cloud Logging |
 | `data/schema.json` | Live BigQuery schema cached by `ria init` | Column names and types for the four tables | Built at deploy time |
 | `data/golden_trios/*.yaml` | 15 seed Trios | `question`, `sql`, `report`, `tags`, `author`, `created_at` | GCS bucket |
-| `data/persona.md` | Tone and emphasis instructions | Free Markdown | Versioned GCS object |
-| `data/definitions.md` | Business definitions (churn 90 days; revenue statuses) | Free Markdown | Versioned GCS object |
+| `data/persona.md` | Tone and emphasis instructions | Free Markdown, at most 4000 characters | Versioned GCS object |
+| `data/persona_versions/*.md` | Previous personas, one per publish | The replaced `persona.md`, named by UTC timestamp; git-ignored | GCS object versions |
+| `data/org_defaults.yaml` | Org-wide business defaults | `churn_window_days` (90), `revenue_statuses` (Complete, Shipped, Processing), `min_group_size` (10) | Versioned GCS object |
 
-## 7. Extension points
+## 7. Configuration layers
+
+Four layers shape an answer. Each has one owner, one way to change it and one gate. A lower
+layer never overrides a higher one: a user preference cannot change a definition, and a
+persona cannot change scope.
+
+| Layer | Owner | How it changes | Gate |
+|---|---|---|---|
+| Code: scope, safety rules, tool access, output language (English only) | Engineering | Pull request | Tests and the eval set |
+| Org defaults: `data/org_defaults.yaml` (churn window, revenue statuses, minimum group size) | Data or admin team | Edit the YAML; read on every turn | Validated on load. An invalid file (bad YAML, unknown key, value out of range) fails the turn with "The org defaults file is invalid: ... Ask the data team to fix data/org_defaults.yaml."; the turn is still traced |
+| Persona: `data/persona.md` (tone and voice, emphasis, default format and depth wording, disclaimer line, report header) | Business or analytics lead | Edit a copy, then `ria persona check` and `ria persona publish` | Lint, plus the eval set with `--live` (zero deterministic failures, judge mean at least 4.0). No manual approval step, per OpsFleet |
+| User preferences (format, depth, charts) | The user | Say it in chat | None; presentation only, never a definition |
+
+An inline request in a question ("use a 60-day window") overrides an org default for that
+answer only, and the answer says so.
+
+The persona editing flow: copy `data/persona.md`, change the copy, run
+`ria persona check <copy>` (and `--live` to run the 24 eval cases with it), then
+`ria persona publish <copy> [--live]`. Publish runs the same checks, saves the current
+persona to `data/persona_versions/<UTC timestamp>.md`, writes the copy to `data/persona.md`
+and prints the saved version. The next turn uses the new persona; no restart. Rollback is
+publishing a saved version. The lint rejects an empty or over-long persona and any line
+that tries to override instructions, names brands, scope, email, SQL, SELECT, delete, PII or
+the minimum group size, changes the output language, or redefines churn or revenue;
+naming a metric as a topic is fine, and a report header may not name a brand because the
+persona is shared by every user. Everything the persona may not change lives in code or
+in `org_defaults.yaml`, with its own owner.
+
+## 8. Extension points
 
 New capabilities are new MCP tools plus, where the user triggers them by asking, a new router
 intent. The SQL guard, PII masker and scope rules do not change, because none of these tools
@@ -224,7 +253,7 @@ issues SQL on the model's behalf.
   example, seasonal trends) to `analyze`. Results are passed to the model as quoted data, not
   as instructions.
 
-## 8. Non-functional
+## 9. Non-functional
 
 **Latency budget per analysis turn** (design targets, not measured on a live run):
 
@@ -253,7 +282,9 @@ BigQuery part of any single query.
 **Concurrency.** Cloud Run instances serve several conversations at once because the graph
 keeps no in-process state between turns. The checkpointer and reports move to Postgres for
 concurrent writers. The limiting resource is Gemini quota, which is why production uses
-provisioned throughput and a queue in front of the agent when quota is near its limit.
+provisioned throughput. There is no request queue: OpsFleet asked for best-effort behaviour
+when quota runs out, so a turn that cannot get a model ends with the model-unavailable
+message and the slash commands keep working.
 
 **Failure domains.**
 
@@ -266,3 +297,24 @@ provisioned throughput and a queue in front of the agent when quota is near its 
 | Vector store | Production: analysis continues without worked examples (lower SQL quality, still guarded). Prototype: the store is in the local SQLite file, so it fails only with the database |
 | Embedding API | The `retrieve_trios` node catches the exception and the turn continues without examples; a `retrieval:failed:<ExceptionType>` guard event is recorded in the trace |
 | Tool service | Prototype: same as the embedding case. Production: Cloud Run restarts the tool service and the agent retries the tool call once |
+
+**Outage visibility.** OpsFleet wants both users and the ops team to know when the agent is
+fully down, and a disclosed fallback.
+
+- User-facing status line. A free-text turn with both models down ends with "The language
+  model is unavailable right now (rate limit or outage). Nothing was lost; please retry
+  shortly." A turn with the warehouse breaker open ends with "The data warehouse is not
+  responding right now... Saved reports and the schema overview still work." Both messages
+  leave the slash commands usable, and the CLI prints them as the answer; no banner or
+  separate status channel is needed in the prototype.
+- Fallback disclosure. When any model call in a turn used the backup model and the turn
+  produced an answer, the CLI appends "Note: answered with the backup model." after the
+  answer. The note is shown only; it is not stored in the conversation or in saved reports.
+- Ops metric. `ria stats` shows `outage_turns`: turns whose error starts with
+  `LLMUnavailable` or whose last SQL attempt was `circuit_open`. It does not count the two
+  degraded paths that swallow a model outage without failing the turn (history summary,
+  report title), which are visible as a guard event and a question-shaped title instead.
+- Ops alert (design). Page the on-call when 3 or more consecutive outage turns occur within
+  5 minutes, or when the fallback rate over 15 minutes exceeds 50 percent. In production
+  both come from the trace log sink in BigQuery; in the prototype `ria stats --since` gives
+  the same numbers by hand.

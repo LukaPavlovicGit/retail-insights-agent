@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, Sequence
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
+from ria.config import OrgDefaultsInvalid, join_statuses, render_definitions
 from ria.graph.deps import Deps
 from ria.llm.client import LLMResult, LLMUnavailable
 
@@ -24,14 +25,14 @@ Node = Callable[[dict], Awaitable[dict]]
 
 
 def timed(name: str, fn: Node, clock=time.perf_counter) -> Node:
-    """Wrap a node to append `{node, ms}` to `node_timings` and to convert `LLMUnavailable` and `BudgetExceeded`
-    into `{"error": ..., "outcome": "error"}`, which the edge functions route to `fail`. Other exceptions are
+    """Wrap a node to append `{node, ms}` to `node_timings` and to convert `LLMUnavailable`, `BudgetExceeded` and
+    `OrgDefaultsInvalid` into `{"error": ..., "outcome": "error"}`, which the edge functions route to `fail`. Other exceptions are
     deliberately not caught: they are bugs and should surface."""
     async def wrapped(state: dict) -> dict:
         t0 = clock()
         try:
             out = await fn(state)
-        except (LLMUnavailable, BudgetExceeded) as e:
+        except (LLMUnavailable, BudgetExceeded, OrgDefaultsInvalid) as e:
             out = {"error": f"{type(e).__name__}: {e}", "outcome": "error"}
         out = dict(out or {})
         out["node_timings"] = list(state.get("node_timings", [])) + [{"node": name, "ms": int((clock() - t0) * 1000)}]
@@ -78,9 +79,11 @@ def base_system(deps: Deps, state: dict) -> dict:
     their prompt template uses."""
     prefs = deps.prefs_store.get(state["user"]["id"])
     summary = state.get("summary") or ""
+    org = deps.org_defaults()
     return {
         "persona": deps.persona(),
-        "definitions": deps.definitions(),
+        "definitions": render_definitions(org),
+        "revenue_statuses": join_statuses(org.revenue_statuses),
         "user_name": state["user"]["name"],
         "user_role": state["user"]["role"],
         "scope": scope_text(state, deps.settings.scope_column),

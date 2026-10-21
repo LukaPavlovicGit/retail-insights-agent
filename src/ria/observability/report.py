@@ -55,6 +55,7 @@ def render_stats(s: dict) -> Table:
         return table
     for key in ("success_rate", "refusal_rate", "error_rate", "fallback_rate"):
         table.add_row(key, f"{s[key]:.0%}")
+    table.add_row("outage_turns", str(s["outage_turns"]))
     table.add_row("rated good/bad", f"{s['rated_good']}/{s['rated_bad']}")
     table.add_row("correction_rate", f"{s['correction_rate']:.0%}")
     table.add_row("mean_repairs", f"{s['mean_repairs']:.2f}")
