@@ -61,23 +61,30 @@ def window(state: dict, deps: Deps) -> list[BaseMessage]:
     return msgs[-(2 * deps.settings.window_turns):]
 
 
-def scope_text(state: dict) -> str:
-    """Plain-language description of the user's category scope, for prompts and user-facing messages."""
-    cats = state["user"].get("categories")
-    return "all product categories" if cats is None else "only these product categories: " + ", ".join(cats)
+def _plural(column: str) -> str:
+    return {"brand": "brands", "category": "categories"}.get(column, column + "s")
+
+
+def scope_text(state: dict, column: str) -> str:
+    """Plain-language description of the user's scope on `column` (the `Settings.scope_column`), for prompts and user-facing messages."""
+    scope = state["user"].get("scope")
+    plural = _plural(column)
+    return f"all {plural}" if scope is None else f"only these {plural}: " + ", ".join(scope)
 
 
 def base_system(deps: Deps, state: dict) -> dict:
-    """Common template values for prompts: persona, user name and role, scope text, preference summary (and the
+    """Common template values for prompts: persona, business definitions, user name and role, scope text and `scope_column`, preference summary (and the
     `Prefs` object itself under `prefs_obj`), and the conversation summary block when one exists. Callers pick the keys
     their prompt template uses."""
     prefs = deps.prefs_store.get(state["user"]["id"])
     summary = state.get("summary") or ""
     return {
         "persona": deps.persona(),
+        "definitions": deps.definitions(),
         "user_name": state["user"]["name"],
         "user_role": state["user"]["role"],
-        "scope": scope_text(state),
+        "scope": scope_text(state, deps.settings.scope_column),
+        "scope_column": deps.settings.scope_column,
         "prefs": prefs.summary(),
         "prefs_obj": prefs,
         "summary_block": f"Summary of earlier conversation: {summary}" if summary else "",

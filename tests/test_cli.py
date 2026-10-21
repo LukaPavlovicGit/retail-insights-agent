@@ -37,28 +37,28 @@ def test_run_init_loads_users_trios_and_embeddings(settings, tmp_path):
     db.init_schema(conn, settings.embedding_dim)
     report = run_init(settings, conn, FakeEmbedder(settings.embedding_dim),
                       schema_fetch=lambda: {"users": {"id": "INT64"}, "orders": {}, "order_items": {}, "products": {}},
-                      live_categories=lambda: ["Jeans", "Pants", "Shorts", "Sweaters", "Tops & Tees", "Accessories", "Socks", "Socks & Hosiery", "Swim"])
+                      live_scope_values=lambda: ["Levi's", "Carhartt", "Dockers", "Wrangler", "Columbia", "Volcom", "Quiksilver", "Speedo"])
     assert report["users"] == 3 and report["trios"] == 15 and report["embedded"] == 15
-    assert report["schema_source"] == "live" and report["unknown_categories"] == []
+    assert report["schema_source"] == "live" and report["unknown_scope_values"] == []
     assert TrioStore(conn).missing_embeddings() == []
     assert (tmp_path / "ria.db").exists()
     assert settings.schema_path.exists() and not (SEED_DIR / "schema.json").exists()
     conn.close()
 
 
-def test_run_init_reports_unknown_categories_and_static_schema(settings, tmp_path):
+def test_run_init_reports_unknown_scope_values_and_static_schema(settings, tmp_path):
     settings = replace(settings, data_dir=seed_copy(tmp_path), db_path=tmp_path / "ria.db")
     conn = db.connect(settings.db_path)
     db.init_schema(conn, settings.embedding_dim)
-    report = run_init(settings, conn, FakeEmbedder(settings.embedding_dim), schema_fetch=None, live_categories=lambda: ["Jeans"])
-    assert report["schema_source"] == "static" and "Pants" in report["unknown_categories"]
-    assert report["category_check"] == "ok"
+    report = run_init(settings, conn, FakeEmbedder(settings.embedding_dim), schema_fetch=None, live_scope_values=lambda: ["Levi's"])
+    assert report["schema_source"] == "static" and "Carhartt" in report["unknown_scope_values"]
+    assert report["scope_check"] == "ok"
 
     def boom():
         raise RuntimeError("bq down")
 
-    failed = run_init(settings, conn, FakeEmbedder(settings.embedding_dim), schema_fetch=None, live_categories=boom)
-    assert failed["category_check"] == "failed" and failed["unknown_categories"] == []
+    failed = run_init(settings, conn, FakeEmbedder(settings.embedding_dim), schema_fetch=None, live_scope_values=boom)
+    assert failed["scope_check"] == "failed" and failed["unknown_scope_values"] == []
     conn.close()
 
 
@@ -84,7 +84,7 @@ async def test_chat_loop_handles_confirmation_and_eof():
         except StopIteration:
             raise EOFError
 
-    await chat_loop(App(), {"id": "alice", "name": "A", "role": "r", "categories": None}, "thread", prompt_fn, outputs.append, run_turn_fn=fake_run_turn)
+    await chat_loop(App(), {"id": "alice", "name": "A", "role": "r", "scope": None}, "thread", prompt_fn, outputs.append, run_turn_fn=fake_run_turn)
     joined = "\n".join(str(o) for o in outputs)
     assert "X" in joined and "Deleted 1 report" in joined and "Hi." in joined
     assert "[turn t1 · deleted]" in outputs
@@ -106,8 +106,20 @@ async def test_chat_loop_survives_interrupt_during_turn():
         except StopIteration:
             raise EOFError
 
-    await chat_loop(object(), {"id": "a", "name": "A", "role": "r", "categories": None}, "th", prompt_fn, outputs.append, run_turn_fn=run_turn_fn)
+    await chat_loop(object(), {"id": "a", "name": "A", "role": "r", "scope": None}, "th", prompt_fn, outputs.append, run_turn_fn=run_turn_fn)
     assert "Turn cancelled." in outputs and "Fine." in outputs
+    assert "/help" in outputs[0]
+
+
+def test_stats_shows_rating_and_correction_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("RIA_DB_PATH", str(tmp_path / "ria.db"))
+    monkeypatch.setenv("RIA_DATA_DIR", str(tmp_path))
+    conn = db.connect(tmp_path / "ria.db")
+    db.init_schema(conn, 768)
+    TraceStore(conn).save(TurnTrace("r1", "t", "alice", "analysis", "ok", "2026-10-16T00:00:00+00:00", 120, rating=1, corrected=True))
+    conn.close()
+    out = CliRunner().invoke(cli, ["stats"]).output
+    assert "rated good/bad" in out and "1/0" in out and "correction_rate" in out and "100%" in out
 
 
 def test_trace_stats_and_golden_commands(tmp_path, monkeypatch):

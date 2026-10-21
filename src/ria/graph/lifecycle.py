@@ -13,8 +13,12 @@ from ria.graph.nodes_common import call_llm
 from ria.graph.prompts import ERROR_TEXT, SUMMARIZE_SYSTEM
 from ria.graph.state import new_turn_fields
 from ria.guards.pii_mask import mask_pii
+from ria.llm.client import LLMUnavailable
 from ria.memory.prefs import extract_preferences
 from ria.observability.trace import TurnTrace
+
+
+ANSWER_OUTCOMES = {"ok", "no_data", "gave_up", "refused", "error", "saved", "deleted", "cancelled"}
 
 
 def make_begin_turn(deps: Deps):
@@ -31,14 +35,18 @@ def make_begin_turn(deps: Deps):
         if len(msgs) > keep + 2:
             older = msgs[:-keep]
             transcript = "\n".join(f"{m.type}: {m.content}" for m in older)
-            res, calls = await call_llm(
-                deps, out, node="summarize",
-                system=SUMMARIZE_SYSTEM.format(existing=state.get("summary") or "(none)"),
-                messages=[HumanMessage(content=transcript)],
-            )
-            out["summary"] = res.text.strip()
-            out["llm_calls"] = calls
-            out["messages"] = [RemoveMessage(id=m.id) for m in older if m.id]
+            try:
+                res, calls = await call_llm(
+                    deps, out, node="summarize",
+                    system=SUMMARIZE_SYSTEM.format(existing=state.get("summary") or "(none)"),
+                    messages=[HumanMessage(content=transcript)],
+                )
+            except LLMUnavailable:  # models down: keep the messages as they are so commands still work
+                out["guard_events"] = ["summary:skipped_llm_unavailable"]
+            else:
+                out["summary"] = res.text.strip()
+                out["llm_calls"] = calls
+                out["messages"] = [RemoveMessage(id=m.id) for m in older if m.id]
         return out
 
     return begin_turn
@@ -57,6 +65,9 @@ def make_finalize(deps: Deps):
             outcome = "error" if outcome in ("", "ok") else outcome
         masked, _ = mask_pii(rendered)
         out: dict = {"rendered": masked, "outcome": outcome, "messages": [AIMessage(content=masked)]}
+        # Only answer-bearing turns can be rated or marked corrected later; listings, help, `/schema` and ratings leave it alone.
+        if outcome in ANSWER_OUTCOMES and state.get("intent") not in ("rating", "schema_overview"):
+            out["last_turn_id"] = state["turn_id"]
         if state.get("intent") == "analysis" and outcome == "ok" and state.get("analysis"):
             out.update(last_question=state.get("question"), last_sql=state.get("sql"), last_analysis=state.get("analysis"))
         return out
@@ -69,7 +80,7 @@ def make_update_memory(deps: Deps):
     message and saves them for next time. Skipped for `preference_update` (already handled by `ack_preference`) and
     `schema_question`. Rule-based, no LLM call, and writes no state. Followed by `write_trace`."""
     async def update_memory(state: dict) -> dict:
-        if state.get("intent") in ("preference_update", "schema_question"):
+        if state.get("intent") in ("preference_update", "schema_question") or state.get("command"):  # commands are not free text
             return {}
         changes = extract_preferences(state.get("question", ""))
         if changes:

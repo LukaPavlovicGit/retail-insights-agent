@@ -100,6 +100,16 @@ def reports_delete(user_id: str, ids: list[int]) -> str:
     return json.dumps({"deleted": store().delete(user_id, ids)})
 
 
+@mcp.tool()
+def reports_get(user_id: str, report_id: int) -> str:
+    """One of the user's reports by id, with its question, SQL and body; `{"report": null}` if it does not exist or is not theirs."""
+    r = store().get(user_id, report_id)
+    if r is None:
+        return json.dumps({"report": None})
+    return json.dumps({"report": {"id": r.id, "thread_id": r.thread_id, "title": r.title, "question": r.question, "sql": r.sql,
+                                  "body": r.body, "tags": r.tags, "created_at": r.created_at}})
+
+
 def main() -> None:
     """Serve the tools over stdio until the parent process closes the pipe."""
     mcp.run(transport="stdio")

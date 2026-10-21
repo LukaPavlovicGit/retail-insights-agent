@@ -38,11 +38,24 @@ PII_COLUMNS: frozenset[str] = frozenset(
     {"email", "first_name", "last_name", "street_address", "postal_code", "latitude", "longitude"}
 )
 
+DEMOGRAPHIC_COLUMNS: frozenset[str] = frozenset({"age", "gender", "state", "city", "country", "traffic_source"})
+# (table, column) pairs treated as demographics: the users columns plus orders.gender, which is copied from the user.
+DEMOGRAPHIC_FIELDS: frozenset[tuple[str, str]] = frozenset(
+    {("users", c) for c in DEMOGRAPHIC_COLUMNS} | {("orders", "gender")}
+)
+
+# Customer keys in order of preference for the minimum-group count (users.id, else order_items.user_id, else orders.user_id).
+CUSTOMER_KEYS: tuple[tuple[str, str], ...] = (("users", "id"), ("order_items", "user_id"), ("orders", "user_id"))
+# Everything that identifies one customer, one order or one item; none may sit next to a demographic outside an aggregate.
+CUSTOMER_IDENTIFIERS: frozenset[tuple[str, str]] = frozenset(CUSTOMER_KEYS) | {
+    ("orders", "order_id"), ("order_items", "order_id"), ("order_items", "id"), ("order_items", "inventory_item_id"),
+}
+
 TABLE_NOTES = {
-    "users": "one row per customer; demographics only may be used (state, age, gender, traffic_source, created_at)",
+    "users": f"one row per customer; demographics only may be used ({', '.join(sorted(DEMOGRAPHIC_COLUMNS))}), always grouped",
     "orders": "one row per order; status in Complete, Shipped, Processing, Cancelled, Returned",
     "order_items": "one row per item sold; sale_price is revenue per item; join products on product_id, users on user_id",
-    "products": "catalog; category and department drive scoping; cost vs retail_price gives margin",
+    "products": "catalog; {scope_column} drives scoping; cost vs retail_price gives margin",
 }
 
 
@@ -52,14 +65,16 @@ def qualify_schema(dataset: str, schema: dict | None = None) -> dict:
     return {catalog: {db: dict(schema or STATIC_SCHEMA)}}
 
 
-def schema_digest(schema: dict | None = None, dataset: str = "bigquery-public-data.thelook_ecommerce") -> str:
+def schema_digest(
+    schema: dict | None = None, dataset: str = "bigquery-public-data.thelook_ecommerce", scope_column: str = "brand"
+) -> str:
     """Describe the tables, columns, join keys and table notes as text for prompts. Personal columns on `users`
     are left out, so the model is never shown them (the SQL guard blocks them as well, in case it guesses)."""
     schema = schema or STATIC_SCHEMA
     lines = [f"Dataset: `{dataset}` (always use fully qualified table names)."]
     for table, cols in schema.items():
         visible = [f"{c} {t}" for c, t in cols.items() if not (table == "users" and c in PII_COLUMNS)]
-        lines.append(f"- `{dataset}.{table}`: {', '.join(visible)}. {TABLE_NOTES.get(table, '')}")
+        lines.append(f"- `{dataset}.{table}`: {', '.join(visible)}. {TABLE_NOTES.get(table, '').format(scope_column=scope_column)}")
     lines.append("Joins: order_items.user_id = users.id; order_items.product_id = products.id; order_items.order_id = orders.order_id.")
     lines.append("Personal columns on users (email, names, address, coordinates) do not exist for you.")
     return "\n".join(lines)

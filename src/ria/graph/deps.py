@@ -19,7 +19,7 @@ from ria.guards.schema import load_schema, schema_digest
 from ria.llm.client import LLMClient
 from ria.memory.prefs import PrefsStore
 from ria.observability.trace import TraceStore
-from ria.persona.loader import load_persona
+from ria.persona.loader import load_definitions, load_persona
 from ria.tools import ToolBox
 
 
@@ -53,6 +53,10 @@ class Deps:
         """Persona text for prompts, re-read from disk on each call so edits to persona.md apply without a restart."""
         return load_persona(self.settings.persona_path)
 
+    def definitions(self) -> str:
+        """Business definitions (churn, revenue, ...) for prompts, re-read from disk on each call like `persona`."""
+        return load_definitions(self.settings.definitions_path)
+
     @classmethod
     def for_tests(cls, conn, settings, llm, toolbox, embedder=None) -> "Deps":
         """Deps with caller-supplied `llm` and `toolbox` (usually `FakeLLM` and `FakeToolBox`), a hashing `FakeEmbedder`
@@ -61,7 +65,7 @@ class Deps:
         return cls(
             settings=settings, llm=llm, embedder=embedder or FakeEmbedder(settings.embedding_dim), toolbox=toolbox,
             conn=conn, trio_store=TrioStore(conn), prefs_store=PrefsStore(conn), trace_store=TraceStore(conn),
-            schema=schema, schema_text=schema_digest(schema, settings.dataset),
+            schema=schema, schema_text=schema_digest(schema, settings.dataset, settings.scope_column),
         )
 
     @classmethod
@@ -75,5 +79,5 @@ class Deps:
             settings=settings, llm=GeminiClient(settings), embedder=GeminiEmbedder(settings), toolbox=toolbox,
             conn=conn, trio_store=TrioStore(conn), prefs_store=PrefsStore(conn),
             trace_store=TraceStore(conn, jsonl_path=settings.db_path.parent / "traces.jsonl"),
-            schema=schema, schema_text=schema_digest(schema, settings.dataset),
+            schema=schema, schema_text=schema_digest(schema, settings.dataset, settings.scope_column),
         )

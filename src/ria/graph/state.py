@@ -13,13 +13,13 @@ from langgraph.graph.message import add_messages
 
 
 class UserCtx(TypedDict):
-    """The signed-in demo user, as returned by `db.get_user`. `categories` is the allowed product-category scope,
-    or None for an unrestricted user. The SQL guard enforces it; prompts only describe it."""
+    """The signed-in demo user, as returned by `db.get_user`. `scope` is the allowed values of
+    `Settings.scope_column` (brands by default), or None for an unrestricted user. The SQL guard enforces it; prompts only describe it."""
 
     id: str
     name: str
     role: str
-    categories: list[str] | None
+    scope: list[str] | None
 
 
 class AgentState(TypedDict, total=False):
@@ -36,6 +36,7 @@ class AgentState(TypedDict, total=False):
     last_question: str | None
     last_sql: str | None
     last_analysis: str | None
+    last_turn_id: str | None
     # turn-level (reset by begin_turn)
     turn_id: str
     started_at: str
@@ -43,6 +44,8 @@ class AgentState(TypedDict, total=False):
     question: str
     intent: str
     router_reason: str
+    command: dict | None
+    correction_of: str | None
     report_filter_scope: str | None
     report_filter_text: str | None
     retrieved_trios: list[dict]
@@ -67,7 +70,7 @@ def new_turn_fields(turn_id: str, question: str, started_at: str, t0: float) -> 
     """Fresh values for every turn-level key, so nothing from the previous turn (SQL, errors, repairs, rendered text) leaks into this one."""
     return {
         "turn_id": turn_id, "started_at": started_at, "t0": t0, "question": question,
-        "intent": "", "router_reason": "", "report_filter_scope": None, "report_filter_text": None,
+        "intent": "", "router_reason": "", "command": None, "correction_of": None, "report_filter_scope": None, "report_filter_text": None,
         "retrieved_trios": [], "sql": None, "sql_attempts": [], "guard_events": [],
         "sql_error": None, "sql_error_kind": None, "repairs": 0,
         "result_rows": None, "result_bytes": 0, "analysis": None, "rendered": None, "pending_delete": None,

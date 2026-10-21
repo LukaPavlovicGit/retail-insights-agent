@@ -56,6 +56,10 @@ async def test_stdio_roundtrip_through_mcp(served_db):
         assert saved["ok"] and saved["id"] == 1
         found = await tb.reports_search("alice", text="round")
         assert [r["id"] for r in found["reports"]] == [1]
+        got = await tb.reports_get("alice", 1)
+        assert got["report"]["body"] == "body" and got["report"]["sql"] == "SELECT 1" and "user_id" not in got["report"]
+        assert (await tb.reports_get("bob", 1)) == {"report": None}
+        assert (await tb.reports_get("alice", 99)) == {"report": None}
         deleted = await tb.reports_delete("alice", [1])
         assert deleted["deleted"] == 1
         schema = await tb.bq_schema()

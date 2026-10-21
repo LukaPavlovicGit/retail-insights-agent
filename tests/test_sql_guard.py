@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from ria.guards.schema import STATIC_SCHEMA, schema_digest, load_schema
@@ -9,82 +11,130 @@ DS = "bigquery-public-data.thelook_ecommerce"
 OI = f"`{DS}.order_items`"
 P = f"`{DS}.products`"
 U = f"`{DS}.users`"
+O = f"`{DS}.orders`"
 
 
-def g(sql, categories=("Jeans", "Pants"), **kw):
-    cats = None if categories is None else list(categories)
-    return guard_sql(sql, categories=cats, dataset=DS, **kw)
+def g(sql, scope=("Levi's", "Carhartt"), **kw):
+    scope = None if scope is None else list(scope)
+    return guard_sql(sql, scope=scope, scope_column="brand", dataset=DS, **kw)
 
 
 def test_rejects_non_select():
-    r = g(f"DELETE FROM {U} WHERE id = 1", categories=None)
+    r = g(f"DELETE FROM {U} WHERE id = 1", scope=None)
     assert not r.ok and "select_only:rejected" in r.events
 
 
 def test_rejects_multiple_statements():
-    r = g("SELECT 1; SELECT 2", categories=None)
+    r = g("SELECT 1; SELECT 2", scope=None)
     assert not r.ok and "single_statement:rejected" in r.events
 
 
 def test_rejects_parse_error():
-    r = g("SELEC nope FROM", categories=None)
+    r = g("SELEC nope FROM", scope=None)
     assert not r.ok and r.events[-1] == "parse:rejected" and "parsed" in r.reason
 
 
 def test_rejects_other_dataset():
-    r = g("SELECT 1 FROM `other-project.other.users`", categories=None)
+    r = g("SELECT 1 FROM `other-project.other.users`", scope=None)
     assert not r.ok and "dataset:rejected" in r.events
 
 
 def test_rejects_pii_direct():
-    r = g(f"SELECT email FROM {U}", categories=None)
+    r = g(f"SELECT email FROM {U}", scope=None)
     assert not r.ok and "pii:rejected" in r.events and "email" in r.reason
 
 
 def test_rejects_pii_aliased():
-    r = g(f"SELECT u.first_name FROM {U} AS u", categories=None)
+    r = g(f"SELECT u.first_name FROM {U} AS u", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_rejects_pii_star_on_users():
-    r = g(f"SELECT * FROM {U}", categories=None)
+    r = g(f"SELECT * FROM {U}", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_rejects_pii_inside_cte():
-    r = g(f"WITH u AS (SELECT email, state FROM {U}) SELECT state FROM u", categories=None)
+    r = g(f"WITH u AS (SELECT email, state FROM {U}) SELECT state FROM u", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_allows_demographics():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", categories=None)
+    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", scope=None)
     assert r.ok and "pii:ok" in r.events
 
 
 def test_rejects_unknown_column_with_reason():
-    r = g(f"SELECT nope FROM {U}", categories=None)
+    r = g(f"SELECT nope FROM {U}", scope=None)
     assert not r.ok and "resolve:rejected" in r.events and "nope" in r.reason
 
 
 def test_scope_injected_when_products_present():
     r = g(f"SELECT p.category, SUM(oi.sale_price) AS rev FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1")
     assert r.ok and "scope:injected" in r.events
-    assert "`p`.`category` IN ('Jeans', 'Pants')" in r.sql
+    assert "`p`.`brand` IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
-def test_scope_adds_join_when_only_order_items():
+def test_scope_semijoin_when_only_order_items():
     r = g(f"SELECT COUNT(*) AS n FROM {OI} oi")
-    assert r.ok and "scope:join_added" in r.events and "scope:injected" in r.events
-    assert "products" in r.sql and "IN ('Jeans', 'Pants')" in r.sql
+    assert r.ok and r.events.count("scope:semijoin") == 1 and "scope:injected" not in r.events
+    assert "`oi`.`product_id` IN (SELECT" in r.sql and "SELECT p.id FROM" in r.sql and "IN ('Levi\\'s', 'Carhartt')" in r.sql
+    assert "JOIN" not in r.sql
 
 
-def test_scope_rejects_when_no_product_path():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state")
-    assert not r.ok and "scope:rejected" in r.events and "order_items" in r.reason
+SELF_JOINS = {
+    "products": (f"SELECT p1.brand, p1.name FROM {P} p1 JOIN {P} p2 ON p1.category = p2.category", ["`p1`.`brand` IN", "`p2`.`brand` IN"]),
+    "products_left": (f"SELECT p1.brand, p1.name FROM {P} p1 LEFT JOIN {P} p2 ON p2.id = -1", ["`p1`.`brand` IN", "`p2`.`brand` IN"]),
+    "order_items": (
+        f"SELECT oi1.product_id, oi1.sale_price FROM {OI} oi1 JOIN {OI} oi2 ON oi1.order_id = oi2.order_id",
+        ["`oi1`.`product_id` IN (SELECT", "`oi2`.`product_id` IN (SELECT"],
+    ),
+    "order_items_with_products": (
+        f"SELECT oi1.product_id, oi1.sale_price FROM {OI} oi1 JOIN {OI} oi2 ON oi1.order_id = oi2.order_id JOIN {P} p ON p.id = oi2.product_id",
+        ["`oi1`.`product_id` IN (SELECT", "`oi2`.`product_id` IN (SELECT", "`p`.`brand` IN"],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SELF_JOINS)
+def test_scope_constrains_every_alias_in_self_joins(name):
+    sql, expected = SELF_JOINS[name]
+    r = g(sql)
+    assert r.ok
+    for fragment in expected:
+        assert fragment in r.sql, fragment
+
+
+def test_scope_events_per_alias():
+    r = g(SELF_JOINS["order_items_with_products"][0])
+    assert r.events.count("scope:semijoin") == 2 and r.events.count("scope:injected") == 1
+
+
+def test_scope_semijoin_for_users_only():
+    r = g(f"SELECT DATE_TRUNC(DATE(created_at), MONTH) AS m, COUNT(*) AS signups FROM {U} GROUP BY m")
+    assert r.ok and "scope:semijoin" in r.events
+    assert re.search(r"`id` IN \(SELECT .*user_id FROM .*order_items.* JOIN .*products.* WHERE .*`brand` IN \('Levi\\'s', 'Carhartt'\)\)", r.sql, re.S)
+    assert r.sql.index("IN (SELECT") < r.sql.index("GROUP BY")
+
+
+def test_scope_semijoin_for_orders_only_keeps_existing_where():
+    r = g(f"SELECT status, COUNT(*) AS n FROM {O} o WHERE o.created_at > '2026-01-01' GROUP BY status")
+    assert r.ok and "scope:semijoin" in r.events
+    assert "`o`.`created_at` > '2026-01-01' AND `o`.`order_id` IN (SELECT" in r.sql
+
+
+def test_scope_semijoin_prefers_orders_when_users_and_orders_present():
+    r = g(f"SELECT u.state, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.state")
+    assert r.ok and "scope:semijoin" in r.events and "`o`.`order_id` IN (SELECT" in r.sql
+
+
+def test_scope_column_setting():
+    r = guard_sql(f"SELECT category FROM {P}", scope=["Jeans"], scope_column="category", dataset=DS)
+    assert r.ok and "`category` IN ('Jeans')" in r.sql
 
 
 def test_scope_skipped_for_unrestricted_user():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", categories=None)
+    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", scope=None)
     assert r.ok and "scope:unrestricted" in r.events and "IN (" not in r.sql
 
 
@@ -95,10 +145,7 @@ def test_scope_injected_inside_cte():
     )
     r = g(sql)
     assert r.ok and "scope:injected" in r.events
-    assert "`oi`.`status` = 'Complete' AND `p`.`category` IN ('Jeans', 'Pants')" in r.sql
-
-
-O = f"`{DS}.orders`"
+    assert "`oi`.`status` = 'Complete' AND `p`.`brand` IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
 @pytest.mark.parametrize(
@@ -110,26 +157,28 @@ O = f"`{DS}.orders`"
     ],
 )
 def test_rejects_whole_row_users_reference(sql):
-    r = g(sql, categories=None)
+    r = g(sql, scope=None)
     assert not r.ok and "pii:rejected" in r.events and "Whole-row" in r.reason
 
 
-def test_scope_rejects_orders_with_products_only_in_subquery():
+def test_scope_orders_with_products_only_in_subquery_gets_semijoin_and_inner_predicate():
     r = g(f"SELECT status, COUNT(*) AS n FROM {O} WHERE EXISTS (SELECT 1 FROM {P}) GROUP BY status")
-    assert not r.ok and "scope:rejected" in r.events
+    assert r.ok and "scope:semijoin" in r.events and "scope:injected" in r.events
+    assert "`order_id` IN (SELECT" in r.sql
+    assert re.search(r"EXISTS\(SELECT 1 .*FROM .*products.* WHERE `products`\.`brand` IN .*\) AND `orders`\.`order_id` IN \(SELECT", r.sql, re.S)
 
 
-def test_scope_orders_only_rejected_for_scoped_ok_for_unrestricted():
+def test_scope_orders_only_scoped_and_unrestricted():
     sql = f"SELECT status, COUNT(*) AS n FROM {O} GROUP BY status"
-    assert "scope:rejected" in g(sql).events
-    r = g(sql, categories=None)
-    assert r.ok and "scope:unrestricted" in r.events
+    assert "scope:semijoin" in g(sql).events
+    r = g(sql, scope=None)
+    assert r.ok and "scope:unrestricted" in r.events and "IN (" not in r.sql
 
 
 def test_scope_injected_in_derived_table_inner_select():
     r = g(f"SELECT t.c FROM (SELECT p.category AS c FROM {P} p) t")
     assert r.ok and "scope:injected" in r.events
-    assert r.sql.index("IN ('Jeans', 'Pants')") < r.sql.index(") AS `t`")
+    assert r.sql.index("IN ('Levi\\'s', 'Carhartt')") < r.sql.index(") AS `t`")
 
 
 def test_limit_added_and_clamped():
@@ -141,8 +190,8 @@ def test_limit_added_and_clamped():
     assert r3.ok and "limit:kept" in r3.events and r3.sql.rstrip().endswith("LIMIT 10")
 
 
-def test_category_with_quote_is_escaped():
-    r = g(f"SELECT category FROM {P}", categories=["Tops & Tees", "O'Neil"])
+def test_scope_value_with_quote_is_escaped():
+    r = g(f"SELECT category FROM {P}", scope=["Tops & Tees", "O'Neil"])
     assert r.ok and "'O\\'Neil'" in r.sql  # BigQuery backslash escape, rendered by sqlglot
 
 
@@ -161,17 +210,128 @@ def test_load_schema_falls_back(tmp_path):
 EV = f"`{DS}.events`"
 
 
-@pytest.mark.parametrize("cats", [None, ["Jeans"]])
-def test_rejects_unknown_table_events(cats):
-    r = g(f"SELECT e.ip_address FROM {EV} e JOIN {OI} oi ON oi.user_id = e.user_id", categories=cats)
+@pytest.mark.parametrize("scope", [None, ["Levi's"]])
+def test_rejects_unknown_table_events(scope):
+    r = g(f"SELECT e.ip_address FROM {EV} e JOIN {OI} oi ON oi.user_id = e.user_id", scope=scope)
     assert not r.ok and "table:rejected" in r.events and "not available" in r.reason
 
 
 def test_rejects_select_star_on_unknown_table():
-    r = g(f"SELECT * FROM {EV}", categories=None)
+    r = g(f"SELECT * FROM {EV}", scope=None)
     assert not r.ok and "table:rejected" in r.events
 
 
 def test_known_tables_emit_table_ok():
-    r = g(f"SELECT p.category FROM {OI} oi JOIN {P} p ON p.id = oi.product_id", categories=None)
+    r = g(f"SELECT p.category FROM {OI} oi JOIN {P} p ON p.id = oi.product_id", scope=None)
     assert r.ok and "table:ok" in r.events
+
+
+def test_demographics_rejects_individual_with_demographic():
+    r = g(f"SELECT oi.user_id, u.state, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY 1, 2", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_allows_individual_without_demographic():
+    r = g(f"SELECT oi.user_id, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1", scope=None)
+    assert r.ok and "demographics:ok" in r.events and "HAVING" not in r.sql
+
+
+def test_demographics_min_group_added_on_group_by():
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state", scope=None)
+    assert r.ok and "demographics:min_group" in r.events
+    assert "HAVING COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_ands_into_existing_having():
+    r = g(f"SELECT u.state, COUNT(*) AS n FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state HAVING COUNT(*) > 5", scope=None)
+    assert r.ok and r.sql.count("HAVING") == 1 and "COUNT(*) > 5 AND COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_uses_order_items_user_id_without_users_table():
+    r = g(f"SELECT u.city, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.city", scope=None)
+    assert r.ok and "COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
+
+
+def test_demographics_min_group_size_setting():
+    r = guard_sql(f"SELECT u.gender, COUNT(*) AS n FROM {U} u JOIN {OI} oi ON oi.user_id = u.id JOIN {P} p ON p.id = oi.product_id GROUP BY u.gender", scope=None, dataset=DS, min_group_size=25)
+    assert ">= 25" in r.sql
+
+
+JOINS = f"FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id"
+
+BYPASSES = {
+    "any_value": f"SELECT oi.user_id, ANY_VALUE(u.city) AS c, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1",
+    "max": f"SELECT oi.user_id, MAX(u.state) AS st {JOINS} GROUP BY 1",
+    "window": f"SELECT oi.user_id, MAX(u.state) OVER (PARTITION BY oi.user_id) AS st {JOINS}",
+    "cte": f"WITH d AS (SELECT id, ANY_VALUE(state) AS st FROM {U} GROUP BY id) SELECT d.st, oi.user_id FROM {OI} oi JOIN d ON d.id = oi.user_id JOIN {P} p ON p.id = oi.product_id",
+    "array_agg": f"WITH d AS (SELECT state, ARRAY_AGG(id) AS ids FROM {U} GROUP BY state) SELECT state, uid FROM d, UNNEST(d.ids) AS uid",
+    "where_filter": f"SELECT oi.user_id, SUM(oi.sale_price) AS s {JOINS} WHERE u.state = 'Texas' GROUP BY 1",
+}
+
+
+@pytest.mark.parametrize("name", BYPASSES)
+def test_demographics_rejects_bypass(name):
+    r = g(BYPASSES[name], scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_allows_count_distinct_with_demographic():
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers {JOINS} GROUP BY u.state", scope=None)
+    assert r.ok
+
+
+def test_demographics_allows_non_demographic_with_ids():
+    r = g(f"SELECT oi.user_id, p.brand, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1, 2", scope=None)
+    assert r.ok
+
+
+def test_demographics_allows_filter_with_counted_ids():
+    r = g(f"SELECT COUNT(DISTINCT oi.user_id) AS n {JOINS} WHERE u.state = 'Texas'", scope=None)
+    assert r.ok
+
+
+def test_demographics_multi_column_group_by_adds_one_having():
+    r = g(f"SELECT u.state, u.gender, COUNT(*) AS n {JOINS} GROUP BY u.state, u.gender", scope=None)
+    assert r.ok and r.sql.count("HAVING") == 1 and r.events.count("demographics:min_group") == 1
+
+
+UNGROUPED = {
+    "cte": f"WITH c AS (SELECT u.state, u.age FROM {U} u) SELECT c.state, c.age, COUNT(*) AS n FROM c GROUP BY 1, 2",
+    "derived": f"SELECT c.state, c.age, COUNT(*) AS n FROM (SELECT u.state, u.age FROM {U} u) c GROUP BY 1, 2",
+    "distinct_window": f"SELECT DISTINCT u.state, u.age, COUNT(*) OVER (PARTITION BY u.state, u.age) AS n FROM {U} u",
+    "bare_no_group": f"SELECT u.age, u.gender, u.city, u.state, u.traffic_source FROM {U} u",
+}
+
+
+@pytest.mark.parametrize("name", UNGROUPED)
+def test_demographics_rejects_ungrouped_bare_columns(name):
+    r = g(UNGROUPED[name], scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "grouped in the same SELECT" in r.reason
+
+
+def test_demographics_rejects_group_by_all():
+    r = g(f"SELECT u.state, u.age, COUNT(*) AS n FROM {U} u GROUP BY ALL", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "GROUP BY ALL" in r.reason
+
+
+def test_demographics_rejects_orders_gender_next_to_id():
+    r = g(f"SELECT o.user_id, o.gender FROM {O} o", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_orders_gender_grouped_gets_having_on_orders_user_id():
+    r = g(f"SELECT o.gender, COUNT(DISTINCT o.user_id) AS n FROM {O} o GROUP BY o.gender", scope=None)
+    assert r.ok and "HAVING COUNT(DISTINCT `o`.`user_id`) >= 10" in r.sql
+
+
+@pytest.mark.parametrize("select", ["o.order_id", "oi.id", "oi.inventory_item_id", "oi.order_id"])
+def test_demographics_rejects_order_and_item_ids(select):
+    r = g(f"SELECT {select}, u.state, u.age FROM {O} o JOIN {U} u ON u.id = o.user_id JOIN {OI} oi ON oi.order_id = o.order_id", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events
+
+
+def test_schema_digest_mentions_scope_column():
+    assert "brand drives scoping" in schema_digest()
+    text = schema_digest(scope_column="category")
+    assert "category drives scoping" in text and "category and department drive scoping" not in text
+    assert "created_at)" not in text.split("one row per customer")[1].split("\n")[0]

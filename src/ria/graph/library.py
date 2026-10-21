@@ -16,6 +16,7 @@ from ria.graph.deps import Deps
 from ria.graph.nodes_common import call_llm
 from ria.graph.prompts import TITLE_SYSTEM
 from ria.guards.pii_mask import mask_pii
+from ria.llm.client import LLMUnavailable
 
 
 class ReportMeta(BaseModel):
@@ -29,7 +30,7 @@ def make_save_report(deps: Deps):
     """Node `save_report`: reads `last_analysis`, `last_question` and `last_sql` (set by `finalize` after the last
     successful analysis); writes `rendered` and `outcome` "saved". One LLM call (`TITLE_SYSTEM`, structured
     `ReportMeta`) for title and tags, then `reports_save` through the toolbox and a `pending` Golden Trio insert
-    tagged with the user's categories. The analysis is PII-masked before it is stored. With nothing to save it
+    tagged with the user's scope values. The analysis is PII-masked before it is stored. With nothing to save it
     replies with guidance and makes no calls. Always followed by `finalize` (or `fail`)."""
     async def save_report(state: dict) -> dict:
         analysis = state.get("last_analysis")
@@ -38,18 +39,22 @@ def make_save_report(deps: Deps):
         analysis = mask_pii(analysis)[0]
         question = state.get("last_question") or state["question"]
         sql = state.get("last_sql") or ""
-        res, calls = await call_llm(
-            deps, state, node="title",
-            system=TITLE_SYSTEM.format(question=question, analysis=analysis[:1500]),
-            messages=[HumanMessage(content="Title and tags, please.")], schema=ReportMeta,
-        )
-        meta: ReportMeta = res.parsed
+        calls = list(state.get("llm_calls", []))
+        try:
+            res, calls = await call_llm(
+                deps, state, node="title",
+                system=TITLE_SYSTEM.format(question=question, analysis=analysis[:1500]),
+                messages=[HumanMessage(content="Title and tags, please.")], schema=ReportMeta,
+            )
+            meta: ReportMeta = res.parsed
+        except LLMUnavailable:  # models down: still save, titled with the start of the question
+            meta = ReportMeta(title=question[:80])
         saved = await deps.toolbox.reports_save(
             state["user"]["id"], state.get("thread_id", ""), meta.title, question, sql, analysis, meta.tags
         )
         rid = saved.get("id")
         deps.trio_store.insert(Trio(
-            id=None, question=question, sql=sql, report=analysis, tags=list(state["user"]["categories"] or ["all"]),
+            id=None, question=question, sql=sql, report=analysis, tags=list(state["user"]["scope"] or ["all"]),
             status="pending", source="user", author=state["user"]["id"],
         ))
         text = (f"Saved report #{rid}: {meta.title}. It is also queued as a Golden Trio candidate for analyst review "
@@ -57,6 +62,36 @@ def make_save_report(deps: Deps):
         return {"rendered": text, "outcome": "saved", "llm_calls": calls}
 
     return save_report
+
+
+def make_list_reports(deps: Deps):
+    """Node `list_reports`: for `/reports`. Calls `reports_search` for this user and renders `#id  title  (created_at)`
+    lines, newest first, or "You have no saved reports."; outcome "listed". No LLM call. Followed by `finalize`."""
+    async def list_reports(state: dict) -> dict:
+        found = await deps.toolbox.reports_search(state["user"]["id"])
+        reports = sorted(found.get("reports", []), key=lambda r: r["id"], reverse=True)
+        if not reports:
+            return {"rendered": "You have no saved reports.", "outcome": "listed"}
+        lines = [f"#{r['id']}  {r['title']}  ({r.get('created_at', '')})" for r in reports]
+        return {"rendered": "Your saved reports:\n" + "\n".join(lines), "outcome": "listed"}
+
+    return list_reports
+
+
+def make_show_report(deps: Deps):
+    """Node `show_report`: for `/report <id>`. Fetches the report with `reports_get` (author only) and renders its title,
+    question, body and SQL in a code block; an unknown or foreign id gives "No report #N in your library."; outcome
+    "shown". No LLM call. Followed by `finalize`."""
+    async def show_report(state: dict) -> dict:
+        rid = int((state.get("command") or {}).get("arg") or 0)
+        report = (await deps.toolbox.reports_get(state["user"]["id"], rid)).get("report")
+        if not report:
+            return {"rendered": f"No report #{rid} in your library.", "outcome": "shown"}
+        text = (f"Report #{report['id']}: {report['title']}\n\nQuestion: {report['question']}\n\n{report['body']}\n\n"
+                f"SQL:\n```sql\n{report['sql']}\n```")
+        return {"rendered": text, "outcome": "shown"}
+
+    return show_report
 
 
 def make_resolve_targets(deps: Deps):

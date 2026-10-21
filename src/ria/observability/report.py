@@ -18,6 +18,11 @@ def render_trace(t: TurnTrace) -> Tree:
         f"turn {escape(t.turn_id)}  user={escape(t.user_id)} intent={escape(str(t.intent))} "
         f"outcome={escape(t.outcome)} {t.duration_ms}ms"
     )
+    if t.rating is not None:
+        note = f" ({escape(t.rating_note)})" if t.rating_note else ""
+        root.add(f"rating: {t.rating:+d}{note}")
+    if t.corrected:
+        root.add("corrected: yes")
     nodes = root.add("nodes")
     for n in t.node_timings:
         nodes.add(f"{escape(str(n['node']))}: {n['ms']}ms")
@@ -50,6 +55,8 @@ def render_stats(s: dict) -> Table:
         return table
     for key in ("success_rate", "refusal_rate", "error_rate", "fallback_rate"):
         table.add_row(key, f"{s[key]:.0%}")
+    table.add_row("rated good/bad", f"{s['rated_good']}/{s['rated_bad']}")
+    table.add_row("correction_rate", f"{s['correction_rate']:.0%}")
     table.add_row("mean_repairs", f"{s['mean_repairs']:.2f}")
     table.add_row("guard_rejections", ", ".join(f"{k}={v}" for k, v in s["guard_rejections"].items()) or "none")
     table.add_row("latency p50/p95 ms", f"{s['p50_ms']}/{s['p95_ms']}")

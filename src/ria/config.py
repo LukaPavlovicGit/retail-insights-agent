@@ -20,7 +20,8 @@ class Settings:
     Limits: `bq_max_bytes` caps bytes scanned per query, `bq_timeout_s` the BigQuery wait, `row_cap` the rows
     returned and the LIMIT the guard enforces, `max_repairs` the SQL repair rounds per turn,
     `max_llm_calls_per_turn` the LLM budget per turn, `window_turns` how many recent turns go to the model
-    before older ones are summarised. `embedding_dim` must match the vector table created by `db.init_schema`.
+    before older ones are summarised, `scope_column` the `products` column that user scopes filter on, `min_group_size`
+    the smallest customer group the guard lets a query show. `embedding_dim` must match the vector table created by `db.init_schema`.
     """
 
     gemini_api_key: str | None = None
@@ -38,12 +39,14 @@ class Settings:
     max_llm_calls_per_turn: int = 8
     row_cap: int = 200
     window_turns: int = 8
+    scope_column: str = "brand"
+    min_group_size: int = 10
 
     @classmethod
     def from_env(cls, env_file: str | None = ".env") -> "Settings":
         """Build settings from env vars, loading `env_file` first without overriding variables already set.
 
-        Only the keys, model names, db path, data dir and byte cap are overridable from the environment;
+        Only the keys, model names, db path, data dir, byte cap, scope column and minimum group size are overridable from the environment;
         the other limits keep their class defaults.
         """
         if env_file:
@@ -57,6 +60,8 @@ class Settings:
             db_path=Path(g("RIA_DB_PATH", "ria.db")),
             data_dir=Path(g("RIA_DATA_DIR", "data")),
             bq_max_bytes=int(g("RIA_BQ_MAX_BYTES", str(cls.bq_max_bytes))),
+            scope_column=g("RIA_SCOPE_COLUMN", cls.scope_column),
+            min_group_size=int(g("RIA_MIN_GROUP_SIZE", str(cls.min_group_size))),
         )
 
     @property
@@ -74,3 +79,7 @@ class Settings:
     @property
     def schema_path(self) -> Path:
         return self.data_dir / "schema.json"
+
+    @property
+    def definitions_path(self) -> Path:
+        return self.data_dir / "definitions.md"

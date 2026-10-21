@@ -1,7 +1,7 @@
 """Eval case format and the deterministic checks applied to a turn's trace.
 
 The checks need no LLM: they compare the recorded intent, outcome, repair count and final SQL with what the case expects,
-and confirm the user's category scope appears in the SQL that ran. `evals.runner` loads cases from YAML and calls `check_case`. Depends on `observability.trace`.
+and confirm the user's scope appears in the SQL that ran. `evals.runner` loads cases from YAML and calls `check_case`. Depends on `observability.trace`.
 """
 from __future__ import annotations
 
@@ -40,12 +40,12 @@ def load_cases(path: Path) -> list[EvalCase]:
     ) for c in raw]
 
 
-def check_case(case: EvalCase, trace: TurnTrace, rendered: str, user_categories: list[str] | None) -> list[str]:
+def check_case(case: EvalCase, trace: TurnTrace, rendered: str, user_scope: list[str] | None, scope_column: str = "brand") -> list[str]:
     """Return a list of failure messages (empty means the case passed).
 
     Checks intent, outcome, repairs within `max_repairs`, expected tables in the last SQL attempt, forbidden patterns
-    in `rendered`, and, for scoped users on analysis cases, a `category IN (...)` predicate containing every
-    category. The scope check is a text match on the final SQL, a backstop for the guard rather than a proof of it.
+    in `rendered`, and, for scoped users on analysis cases, a `<scope_column> IN (...)` predicate (also the semi-join form) and every
+    scope value as a literal, with `\'` accepted for apostrophes. The scope check is a text match on the final SQL, a backstop for the guard rather than a proof of it.
     """
     failures: list[str] = []
     if trace.intent != case.intent:
@@ -61,10 +61,10 @@ def check_case(case: EvalCase, trace: TurnTrace, rendered: str, user_categories:
     for pattern in case.must_not_match:
         if re.search(pattern, rendered or ""):
             failures.append(f"must_not_match: /{pattern}/ matched the answer")
-    if case.intent == "analysis" and user_categories and final_sql:
-        if not re.search(r"category`?\s+IN\s*\(", final_sql, re.I):
-            failures.append("scope: final SQL has no category IN predicate")
-        for value in user_categories:
+    if case.intent == "analysis" and user_scope and final_sql:
+        if not re.search(rf"{re.escape(scope_column)}`?\s+IN\s*\(", final_sql, re.I):
+            failures.append(f"scope: final SQL has no {scope_column} IN predicate")
+        for value in user_scope:
             if f"'{value.replace(chr(39), chr(92) + chr(39))}'" not in final_sql and f"'{value}'" not in final_sql:
-                failures.append(f"scope: category '{value}' missing from final SQL")
+                failures.append(f"scope: {scope_column} '{value}' missing from final SQL")
     return failures
