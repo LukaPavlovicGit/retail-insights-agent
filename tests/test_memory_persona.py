@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ria.memory.prefs import Prefs, PrefsStore, extract_preferences
-from ria.persona.loader import DEFAULT_DEFINITIONS, DEFAULT_PERSONA, load_definitions, load_persona
+from ria.persona.loader import DEFAULT_PERSONA, load_persona
 
 
 def test_extract_format_preferences():
@@ -66,13 +66,3 @@ def test_load_persona(tmp_path):
     f = tmp_path / "persona.md"
     f.write_text("# Be terse\n")
     assert load_persona(f) == "# Be terse"
-
-
-def test_load_definitions(tmp_path):
-    assert load_definitions(tmp_path / "missing.md") == DEFAULT_DEFINITIONS
-    assert "90 days" in DEFAULT_DEFINITIONS and "Complete, Shipped or Processing" in DEFAULT_DEFINITIONS
-    f = tmp_path / "definitions.md"
-    f.write_text("- Churn: 30 days\n")
-    assert load_definitions(f) == "- Churn: 30 days"
-    f.write_text("  \n")
-    assert load_definitions(f) == DEFAULT_DEFINITIONS

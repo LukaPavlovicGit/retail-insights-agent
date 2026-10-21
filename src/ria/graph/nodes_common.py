@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, Sequence
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
+from ria.config import join_statuses, render_definitions
 from ria.graph.deps import Deps
 from ria.llm.client import LLMResult, LLMUnavailable
 
@@ -78,9 +79,11 @@ def base_system(deps: Deps, state: dict) -> dict:
     their prompt template uses."""
     prefs = deps.prefs_store.get(state["user"]["id"])
     summary = state.get("summary") or ""
+    org = deps.org_defaults()
     return {
         "persona": deps.persona(),
-        "definitions": deps.definitions(),
+        "definitions": render_definitions(org),
+        "revenue_statuses": join_statuses(org.revenue_statuses),
         "user_name": state["user"]["name"],
         "user_role": state["user"]["role"],
         "scope": scope_text(state, deps.settings.scope_column),

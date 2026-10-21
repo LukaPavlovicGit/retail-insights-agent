@@ -1,0 +1,4 @@
+# Org-wide business defaults. Owned by the data or admin team; read on every turn.
+churn_window_days: 90
+revenue_statuses: [Complete, Shipped, Processing]
+min_group_size: 10
