@@ -26,8 +26,11 @@ FORBIDDEN_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bselect\b", "mentions SELECT"),
     (r"\bdelete\b", "mentions delete"),
     (r"\bpii\b", "mentions PII"),
-    (r"\bchurn\b", "mentions churn (business definitions live in org_defaults.yaml)"),
-    (r"\brevenue\b", "mentions revenue (business definitions live in org_defaults.yaml)"),
+    # Naming churn or revenue as a topic is fine ("round revenue to the nearest thousand"); redefining them is not.
+    (r"\b(?:churn|revenue)\b[^.\n]{0,60}\b(?:is|means|defined?|counts?|includes?|excludes?|window|days?|status(?:es)?)\b",
+     "redefines churn or revenue (business definitions live in org_defaults.yaml)"),
+    (r"\b(?:is|means|defined?|counts?|includes?|excludes?|window|days?|status(?:es)?)\b[^.\n]{0,60}\b(?:churn|revenue)\b",
+     "redefines churn or revenue (business definitions live in org_defaults.yaml)"),
     (r"\bminimum group\b", "mentions the minimum group size (org_defaults.yaml)"),
 )
 _COMPILED = tuple((re.compile(p, re.IGNORECASE), reason) for p, reason in FORBIDDEN_PATTERNS)
