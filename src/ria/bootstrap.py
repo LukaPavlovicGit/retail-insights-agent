@@ -1,6 +1,6 @@
 """Non-interactive pieces of the CLI, kept separate so they are testable without a terminal.
 
-`run_init` backs `ria init` (load users and seed Golden Trios, embed them, cache the live schema, check user categories).
+`run_init` backs `ria init` (load users and seed Golden Trios, embed them, cache the live schema, check user scope values).
 `chat_loop` is the read-eval-print loop behind `ria chat`; it drives `graph.run.run_turn` and handles the delete confirmation.
 All I/O (prompting, printing, BigQuery, embeddings) is injected, so tests call these with fakes."""
 from __future__ import annotations
@@ -19,15 +19,15 @@ from ria.guards.schema import STATIC_SCHEMA
 
 
 def run_init(settings: Settings, conn, embedder: Embedder, schema_fetch: Callable[[], dict] | None,
-             live_categories: Callable[[], list[str]] | None) -> dict:
+             live_scope_values: Callable[[], list[str]] | None) -> dict:
     """Prepare the local database and data files for chat. Safe to re-run.
 
     Loads users.yaml, replaces the seed Golden Trios, and embeds every trio that has no vector yet (including
     user-saved candidates). If `schema_fetch` returns a schema containing every static table it is
     written to `settings.schema_path`; any failure or partial result keeps the built-in schema. If
-    `live_categories` is given, user categories missing from the dataset are reported, not rejected.
-    Returns a summary dict (counts, `schema_source` "live" or "static", `unknown_categories`, `category_check`
-    "ok" or "failed") that the CLI prints. Embedding errors propagate; schema and category lookups never raise.
+    `live_scope_values` is given, user scope values missing from the dataset are reported, not rejected.
+    Returns a summary dict (counts, `schema_source` "live" or "static", `unknown_scope_values`, `scope_check`
+    "ok" or "failed") that the CLI prints. Embedding errors propagate; schema and scope lookups never raise.
     """
     users =db.load_users(conn, settings.users_path)
     trios = load_trios_dir(settings.trios_dir)
@@ -49,19 +49,19 @@ def run_init(settings: Settings, conn, embedder: Embedder, schema_fetch: Callabl
         except Exception:  # noqa: BLE001 - fall back to the static schema
             schema_source = "static"
     unknown: list[str] = []
-    category_check = "ok"
-    if live_categories is not None:
+    scope_check = "ok"
+    if live_scope_values is not None:
         try:
-            known = set(live_categories())
+            known = set(live_scope_values())
             for u in users:
-                for c in u["categories"] or []:
-                    if c not in known:
-                        unknown.append(c)
+                for v in u["scope"] or []:
+                    if v not in known:
+                        unknown.append(v)
         except Exception:  # noqa: BLE001
             unknown = []
-            category_check = "failed"
+            scope_check = "failed"
     return {"users": len(users), "trios": len(trios), "embedded": len(missing), "schema_source": schema_source,
-            "unknown_categories": sorted(set(unknown)), "category_check": category_check}
+            "unknown_scope_values": sorted(set(unknown)), "scope_check": scope_check}
 
 
 def parse_confirmation(text: str) -> bool:

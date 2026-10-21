@@ -17,7 +17,7 @@ REQUIRED = ("question", "sql", "report")
 
 @dataclass
 class Trio:
-    """One Golden Trio. `id` is None until stored. `tags` are the product categories it suits, or "all"; retrieval
+    """One Golden Trio. `id` is None until stored. `tags` are the scope values (brands) it suits, or "all"; retrieval
     matches them against the user's scope. `status` is promoted, pending or rejected. `source` is "seed" (from
     YAML) or "user" (saved from chat). `author` and `created_at` are informational."""
 

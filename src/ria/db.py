@@ -16,7 +16,7 @@ import yaml
 
 DDL = """
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, categories TEXT NOT NULL);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, scope TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS user_prefs (
   user_id TEXT PRIMARY KEY, format TEXT NOT NULL DEFAULT 'prose', depth TEXT NOT NULL DEFAULT 'standard',
   charts INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', brevity_streak INTEGER NOT NULL DEFAULT 0,
@@ -72,36 +72,36 @@ def init_schema(conn: sqlite3.Connection, embedding_dim: int) -> None:
 
 
 def _row_to_user(row: sqlite3.Row) -> dict:
-    cats = json.loads(row["categories"])
+    scope = json.loads(row["scope"])
     return {
         "id": row["id"],
         "name": row["name"],
         "role": row["role"],
-        "categories": None if cats == ["*"] else cats,
+        "scope": None if scope == ["*"] else scope,
     }
 
 
 def load_users(conn: sqlite3.Connection, path: Path) -> list[dict]:
     """Upsert the demo users from users.yaml and return them as user dicts.
 
-    Each entry needs id, name, role and categories, otherwise `ValueError`. `categories: ["*"]` means
-    unrestricted and comes back as `None`; any other list is the user's product-category scope.
+    Each entry needs id, name, role and brands, otherwise `ValueError`. `brands: ["*"]` means
+    unrestricted and comes back as `None`; any other list is the user's scope (stored in the `scope` column).
     """
     raw = yaml.safe_load(Path(path).read_text()) or []
     for u in raw:
-        for key in ("id", "name", "role", "categories"):
+        for key in ("id", "name", "role", "brands"):
             if key not in u:
                 raise ValueError(f"{path}: user entry missing '{key}'")
         conn.execute(
-            "INSERT OR REPLACE INTO users (id, name, role, categories) VALUES (?, ?, ?, ?)",
-            (u["id"], u["name"], u["role"], json.dumps(list(u["categories"]))),
+            "INSERT OR REPLACE INTO users (id, name, role, scope) VALUES (?, ?, ?, ?)",
+            (u["id"], u["name"], u["role"], json.dumps(list(u["brands"]))),
         )
     conn.commit()
     return [get_user(conn, u["id"]) for u in raw]
 
 
 def get_user(conn: sqlite3.Connection, user_id: str) -> dict | None:
-    """Return `{id, name, role, categories}` (categories `None` = unrestricted), or `None` for an unknown id.
+    """Return `{id, name, role, scope}` (scope `None` = unrestricted), or `None` for an unknown id.
 
     This dict is the `UserCtx` that the graph carries in state and the SQL guard uses for scoping."""
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()

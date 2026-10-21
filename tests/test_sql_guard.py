@@ -14,58 +14,58 @@ U = f"`{DS}.users`"
 O = f"`{DS}.orders`"
 
 
-def g(sql, categories=("Levi's", "Carhartt"), **kw):
-    scope = None if categories is None else list(categories)
+def g(sql, scope=("Levi's", "Carhartt"), **kw):
+    scope = None if scope is None else list(scope)
     return guard_sql(sql, scope=scope, scope_column="brand", dataset=DS, **kw)
 
 
 def test_rejects_non_select():
-    r = g(f"DELETE FROM {U} WHERE id = 1", categories=None)
+    r = g(f"DELETE FROM {U} WHERE id = 1", scope=None)
     assert not r.ok and "select_only:rejected" in r.events
 
 
 def test_rejects_multiple_statements():
-    r = g("SELECT 1; SELECT 2", categories=None)
+    r = g("SELECT 1; SELECT 2", scope=None)
     assert not r.ok and "single_statement:rejected" in r.events
 
 
 def test_rejects_parse_error():
-    r = g("SELEC nope FROM", categories=None)
+    r = g("SELEC nope FROM", scope=None)
     assert not r.ok and r.events[-1] == "parse:rejected" and "parsed" in r.reason
 
 
 def test_rejects_other_dataset():
-    r = g("SELECT 1 FROM `other-project.other.users`", categories=None)
+    r = g("SELECT 1 FROM `other-project.other.users`", scope=None)
     assert not r.ok and "dataset:rejected" in r.events
 
 
 def test_rejects_pii_direct():
-    r = g(f"SELECT email FROM {U}", categories=None)
+    r = g(f"SELECT email FROM {U}", scope=None)
     assert not r.ok and "pii:rejected" in r.events and "email" in r.reason
 
 
 def test_rejects_pii_aliased():
-    r = g(f"SELECT u.first_name FROM {U} AS u", categories=None)
+    r = g(f"SELECT u.first_name FROM {U} AS u", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_rejects_pii_star_on_users():
-    r = g(f"SELECT * FROM {U}", categories=None)
+    r = g(f"SELECT * FROM {U}", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_rejects_pii_inside_cte():
-    r = g(f"WITH u AS (SELECT email, state FROM {U}) SELECT state FROM u", categories=None)
+    r = g(f"WITH u AS (SELECT email, state FROM {U}) SELECT state FROM u", scope=None)
     assert not r.ok and "pii:rejected" in r.events
 
 
 def test_allows_demographics():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", categories=None)
+    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", scope=None)
     assert r.ok and "pii:ok" in r.events
 
 
 def test_rejects_unknown_column_with_reason():
-    r = g(f"SELECT nope FROM {U}", categories=None)
+    r = g(f"SELECT nope FROM {U}", scope=None)
     assert not r.ok and "resolve:rejected" in r.events and "nope" in r.reason
 
 
@@ -105,7 +105,7 @@ def test_scope_column_setting():
 
 
 def test_scope_skipped_for_unrestricted_user():
-    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", categories=None)
+    r = g(f"SELECT state, COUNT(*) AS n FROM {U} GROUP BY state", scope=None)
     assert r.ok and "scope:unrestricted" in r.events and "IN (" not in r.sql
 
 
@@ -128,7 +128,7 @@ def test_scope_injected_inside_cte():
     ],
 )
 def test_rejects_whole_row_users_reference(sql):
-    r = g(sql, categories=None)
+    r = g(sql, scope=None)
     assert not r.ok and "pii:rejected" in r.events and "Whole-row" in r.reason
 
 
@@ -142,7 +142,7 @@ def test_scope_orders_with_products_only_in_subquery_gets_semijoin_and_inner_pre
 def test_scope_orders_only_scoped_and_unrestricted():
     sql = f"SELECT status, COUNT(*) AS n FROM {O} GROUP BY status"
     assert "scope:semijoin" in g(sql).events
-    r = g(sql, categories=None)
+    r = g(sql, scope=None)
     assert r.ok and "scope:unrestricted" in r.events and "IN (" not in r.sql
 
 
@@ -161,8 +161,8 @@ def test_limit_added_and_clamped():
     assert r3.ok and "limit:kept" in r3.events and r3.sql.rstrip().endswith("LIMIT 10")
 
 
-def test_category_with_quote_is_escaped():
-    r = g(f"SELECT category FROM {P}", categories=["Tops & Tees", "O'Neil"])
+def test_scope_value_with_quote_is_escaped():
+    r = g(f"SELECT category FROM {P}", scope=["Tops & Tees", "O'Neil"])
     assert r.ok and "'O\\'Neil'" in r.sql  # BigQuery backslash escape, rendered by sqlglot
 
 
@@ -181,45 +181,45 @@ def test_load_schema_falls_back(tmp_path):
 EV = f"`{DS}.events`"
 
 
-@pytest.mark.parametrize("cats", [None, ["Jeans"]])
-def test_rejects_unknown_table_events(cats):
-    r = g(f"SELECT e.ip_address FROM {EV} e JOIN {OI} oi ON oi.user_id = e.user_id", categories=cats)
+@pytest.mark.parametrize("scope", [None, ["Levi's"]])
+def test_rejects_unknown_table_events(scope):
+    r = g(f"SELECT e.ip_address FROM {EV} e JOIN {OI} oi ON oi.user_id = e.user_id", scope=scope)
     assert not r.ok and "table:rejected" in r.events and "not available" in r.reason
 
 
 def test_rejects_select_star_on_unknown_table():
-    r = g(f"SELECT * FROM {EV}", categories=None)
+    r = g(f"SELECT * FROM {EV}", scope=None)
     assert not r.ok and "table:rejected" in r.events
 
 
 def test_known_tables_emit_table_ok():
-    r = g(f"SELECT p.category FROM {OI} oi JOIN {P} p ON p.id = oi.product_id", categories=None)
+    r = g(f"SELECT p.category FROM {OI} oi JOIN {P} p ON p.id = oi.product_id", scope=None)
     assert r.ok and "table:ok" in r.events
 
 
 def test_demographics_rejects_individual_with_demographic():
-    r = g(f"SELECT oi.user_id, u.state, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY 1, 2", categories=None)
+    r = g(f"SELECT oi.user_id, u.state, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY 1, 2", scope=None)
     assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
 
 
 def test_demographics_allows_individual_without_demographic():
-    r = g(f"SELECT oi.user_id, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1", categories=None)
+    r = g(f"SELECT oi.user_id, SUM(oi.sale_price) AS spend FROM {OI} oi JOIN {P} p ON p.id = oi.product_id GROUP BY 1", scope=None)
     assert r.ok and "demographics:ok" in r.events and "HAVING" not in r.sql
 
 
 def test_demographics_min_group_added_on_group_by():
-    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state", categories=None)
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state", scope=None)
     assert r.ok and "demographics:min_group" in r.events
     assert "HAVING COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
 
 
 def test_demographics_min_group_ands_into_existing_having():
-    r = g(f"SELECT u.state, COUNT(*) AS n FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state HAVING COUNT(*) > 5", categories=None)
+    r = g(f"SELECT u.state, COUNT(*) AS n FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id GROUP BY u.state HAVING COUNT(*) > 5", scope=None)
     assert r.ok and r.sql.count("HAVING") == 1 and "COUNT(*) > 5 AND COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
 
 
 def test_demographics_min_group_uses_order_items_user_id_without_users_table():
-    r = g(f"SELECT u.city, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.city", categories=None)
+    r = g(f"SELECT u.city, COUNT(*) AS n FROM {O} o JOIN {U} u ON u.id = o.user_id GROUP BY u.city", scope=None)
     assert r.ok and "COUNT(DISTINCT `u`.`id`) >= 10" in r.sql
 
 
@@ -242,25 +242,25 @@ BYPASSES = {
 
 @pytest.mark.parametrize("name", BYPASSES)
 def test_demographics_rejects_bypass(name):
-    r = g(BYPASSES[name], categories=None)
+    r = g(BYPASSES[name], scope=None)
     assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
 
 
 def test_demographics_allows_count_distinct_with_demographic():
-    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers {JOINS} GROUP BY u.state", categories=None)
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers {JOINS} GROUP BY u.state", scope=None)
     assert r.ok
 
 
 def test_demographics_allows_non_demographic_with_ids():
-    r = g(f"SELECT oi.user_id, p.brand, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1, 2", categories=None)
+    r = g(f"SELECT oi.user_id, p.brand, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1, 2", scope=None)
     assert r.ok
 
 
 def test_demographics_allows_filter_with_counted_ids():
-    r = g(f"SELECT COUNT(DISTINCT oi.user_id) AS n {JOINS} WHERE u.state = 'Texas'", categories=None)
+    r = g(f"SELECT COUNT(DISTINCT oi.user_id) AS n {JOINS} WHERE u.state = 'Texas'", scope=None)
     assert r.ok
 
 
 def test_demographics_multi_column_group_by_adds_one_having():
-    r = g(f"SELECT u.state, u.gender, COUNT(*) AS n {JOINS} GROUP BY u.state, u.gender", categories=None)
+    r = g(f"SELECT u.state, u.gender, COUNT(*) AS n {JOINS} GROUP BY u.state, u.gender", scope=None)
     assert r.ok and r.sql.count("HAVING") == 1 and r.events.count("demographics:min_group") == 1

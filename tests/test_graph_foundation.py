@@ -4,11 +4,11 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 from ria.graph.lifecycle import make_begin_turn, make_fail, make_finalize, make_update_memory, make_write_trace
-from ria.graph.nodes_common import BudgetExceeded, after, call_llm, route_intent, timed
+from ria.graph.nodes_common import BudgetExceeded, after, call_llm, route_intent, scope_text, timed
 from ria.graph.router import RouteDecision, make_ack_preference, make_refuse, make_router
 from ria.graph.schema_qa import make_schema_answer
 from ria.llm.client import LLMUnavailable
-from tests.graph_fixtures import make_deps, turn_state
+from tests.graph_fixtures import CAROL, make_deps, turn_state
 
 
 async def test_timed_records_timing_and_converts_llm_errors():
@@ -37,12 +37,19 @@ def test_routing_helpers():
     assert after("next")({}) == "next" and after("next")({"error": "x"}) == "fail"
 
 
+def test_scope_text_pluralises_column():
+    assert scope_text(turn_state("q"), "brand").startswith("only these brands: Levi's")
+    assert scope_text(turn_state("q", user=CAROL), "brand") == "all brands"
+    assert scope_text(turn_state("q", user=CAROL), "category") == "all categories"
+    assert scope_text(turn_state("q", user=CAROL), "region") == "all regions"
+
+
 async def test_router_uses_llm_decision(conn, settings):
     deps = make_deps(conn, settings, {"router": [RouteDecision(intent="report_delete", reason="r", report_filter_scope="text", report_filter_text="Client X")]})
     out = await make_router(deps)(turn_state("delete all reports mentioning Client X"))
     assert out["intent"] == "report_delete" and out["report_filter_text"] == "Client X" and len(out["llm_calls"]) == 1
     system = deps.llm.calls[0]["system"]
-    assert "Alice Chen" in system and "Jeans, Pants" in system
+    assert "Alice Chen" in system and "only these brands: Levi's, Carhartt, Dockers, Wrangler" in system
 
 
 async def test_router_empty_message_is_off_topic_without_llm(conn, settings):

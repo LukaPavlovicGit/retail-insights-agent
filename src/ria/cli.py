@@ -46,7 +46,7 @@ def init() -> None:
     """Load users and Golden Trios, embed them, cache the live schema.
 
     Needs GEMINI_API_KEY (for embeddings). BigQuery access is optional: without it the built-in schema is
-    used and the category check is reported as failed. Delegates to `bootstrap.run_init`.
+    used and the scope check is reported as failed. Delegates to `bootstrap.run_init`.
     """
     settings = _settings()
     if not settings.gemini_api_key:
@@ -58,18 +58,19 @@ def init() -> None:
     conn = _conn(settings)
     runner = BigQueryRunner(settings.gcp_project, settings.dataset, settings.bq_max_bytes, settings.bq_timeout_s, settings.row_cap)
 
-    def categories() -> list[str]:
-        res = runner.query(f"SELECT DISTINCT category FROM `{settings.dataset}.products` ORDER BY 1")
+    def scope_values() -> list[str]:
+        col = settings.scope_column
+        res = runner.query(f"SELECT DISTINCT {col} FROM `{settings.dataset}.products` ORDER BY 1")
         if not res["ok"]:
             raise RuntimeError(res["error"])
-        return [r["category"] for r in res["rows"]]
+        return [r[col] for r in res["rows"]]
 
-    report = run_init(settings, conn, GeminiEmbedder(settings), schema_fetch=runner.live_schema, live_categories=categories)
+    report = run_init(settings, conn, GeminiEmbedder(settings), schema_fetch=runner.live_schema, live_scope_values=scope_values)
     console.print(f"users: {report['users']}  trios: {report['trios']}  newly embedded: {report['embedded']}  schema: {report['schema_source']}")
-    if report["unknown_categories"]:
-        console.print(f"[yellow]Categories in users.yaml not found in the dataset: {report['unknown_categories']}[/yellow]")
-    if report["category_check"] == "failed":
-        console.print("[yellow]Could not validate categories against BigQuery.[/yellow]")
+    if report["unknown_scope_values"]:
+        console.print(f"[yellow]Values in users.yaml not found in products.{settings.scope_column}: {report['unknown_scope_values']}[/yellow]")
+    if report["scope_check"] == "failed":
+        console.print(f"[yellow]Could not validate users.yaml against products.{settings.scope_column} in BigQuery.[/yellow]")
     if report["schema_source"] == "static":
         console.print("[yellow]Could not read the live schema from BigQuery; using the built-in one. Run `ria doctor`.[/yellow]")
 

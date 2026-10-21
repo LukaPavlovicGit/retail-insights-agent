@@ -81,12 +81,12 @@ class TrioStore:
         return [_row(r) for r in rows]
 
     def search(
-        self, vec: list[float], categories: list[str] | None, k: int = 3, max_distance: float = 0.5
+        self, vec: list[float], scope: list[str] | None, k: int = 3, max_distance: float = 0.5
     ) -> list[tuple[Trio, float]]:
         """Return up to `k` `(trio, cosine_distance)` pairs nearest to `vec`, closest first.
 
-        Filters: distance at most `max_distance`, status `promoted`, and, when `categories` is a list, trios tagged
-        "all" or sharing a category with the user (None means unrestricted, so no tag filter). The vector query
+        Filters: distance at most `max_distance`, status `promoted`, and, when `scope` is a list, trios tagged
+        "all" or sharing a scope value with the user (None means unrestricted, so no tag filter). The vector query
         over-fetches (`max(4k, 8)`) because these filters run after the nearest-neighbour step.
         """
         rows = self.conn.execute(
@@ -94,14 +94,14 @@ class TrioStore:
             (serialize_float32(vec), max(k * 4, 8)),
         ).fetchall()
         out: list[tuple[Trio, float]] = []
-        wanted = set(categories or [])
+        wanted = set(scope or [])
         for r in rows:
             if r["distance"] > max_distance:
                 continue
             t = self.get(r["trio_id"])
             if t is None or t.status != "promoted":
                 continue
-            if categories is not None and "all" not in t.tags and not (wanted & set(t.tags)):
+            if scope is not None and "all" not in t.tags and not (wanted & set(t.tags)):
                 continue
             out.append((t, float(r["distance"])))
             if len(out) == k:

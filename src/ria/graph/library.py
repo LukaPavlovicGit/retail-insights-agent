@@ -29,7 +29,7 @@ def make_save_report(deps: Deps):
     """Node `save_report`: reads `last_analysis`, `last_question` and `last_sql` (set by `finalize` after the last
     successful analysis); writes `rendered` and `outcome` "saved". One LLM call (`TITLE_SYSTEM`, structured
     `ReportMeta`) for title and tags, then `reports_save` through the toolbox and a `pending` Golden Trio insert
-    tagged with the user's categories. The analysis is PII-masked before it is stored. With nothing to save it
+    tagged with the user's scope values. The analysis is PII-masked before it is stored. With nothing to save it
     replies with guidance and makes no calls. Always followed by `finalize` (or `fail`)."""
     async def save_report(state: dict) -> dict:
         analysis = state.get("last_analysis")
@@ -49,7 +49,7 @@ def make_save_report(deps: Deps):
         )
         rid = saved.get("id")
         deps.trio_store.insert(Trio(
-            id=None, question=question, sql=sql, report=analysis, tags=list(state["user"]["categories"] or ["all"]),
+            id=None, question=question, sql=sql, report=analysis, tags=list(state["user"]["scope"] or ["all"]),
             status="pending", source="user", author=state["user"]["id"],
         ))
         text = (f"Saved report #{rid}: {meta.title}. It is also queued as a Golden Trio candidate for analyst review "

@@ -114,12 +114,12 @@ FORMAT_INSTRUCTIONS = {
 }
 
 NO_DATA_TEXT = (
-    "The query ran but returned no rows. Your access covers {scope}, so questions about other categories "
-    "will come back empty. Try a different time range or category within your scope.\n\nLast SQL tried:\n```sql\n{sql}\n```"
+    "The query ran but returned no rows. Your access covers {scope}, so questions about anything outside your scope "
+    "will come back empty. Try a different time range or a different item within your scope.\n\nLast SQL tried:\n```sql\n{sql}\n```"
 )
 
 NO_DATA_TEXT_UNSCOPED = (
-    "The query ran but returned no rows. Try a different time range, category, or metric."
+    "The query ran but returned no rows. Try a different time range, product group, or metric."
     "\n\nLast SQL tried:\n```sql\n{sql}\n```"
 )
 
@@ -134,7 +134,7 @@ DATA_SOURCE_DOWN_TEXT = (
 )
 
 QUERY_TOO_LARGE_TEXT = (
-    "This question would scan more data than allowed ({detail}). Narrow the time range or the categories and try again."
+    "This question would scan more data than allowed ({detail}). Narrow the time range or the scope of the question and try again."
 )
 
 TITLE_SYSTEM = """Write a report title (at most 8 words) and 1 to 3 lowercase tags for this analysis.

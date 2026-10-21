@@ -1,14 +1,14 @@
-# Demo users. `categories` lists the products.category values the user may analyze.
-# "*" means unrestricted. Category names must match the dataset; `ria init` validates them.
+# Demo users. `brands` lists the products.brand values the user may analyze.
+# "*" means unrestricted. Brand names must match the dataset; `ria init` validates them.
 - id: alice
   name: Alice Chen
-  role: VP Apparel
-  categories: [Jeans, Pants, Shorts, Sweaters, "Tops & Tees"]
+  role: VP Denim and Workwear
+  brands: ["Levi's", Carhartt, Dockers, Wrangler]
 - id: bob
   name: Bob Okafor
-  role: VP Accessories
-  categories: [Accessories, Socks, "Socks & Hosiery", Swim]
+  role: VP Outdoor and Swim
+  brands: [Columbia, Volcom, Quiksilver, Speedo]
 - id: carol
   name: Carol Diaz
   role: CEO
-  categories: ["*"]
+  brands: ["*"]

@@ -67,7 +67,7 @@ async def run_evals(settings: Settings, conn, cases: list[EvalCase], judge: LLMC
             if result.outcome == "needs_confirmation":
                 result = await run_turn(app, user, thread_id, "", resume={"confirmed": False})
             trace = deps.trace_store.get(result.turn_id)
-            failures = check_case(case, trace, result.rendered or "", user["categories"]) if trace else ["no trace written"]
+            failures = check_case(case, trace, result.rendered or "", user["scope"], settings.scope_column) if trace else ["no trace written"]
             score, reason = None, ""
             try:
                 j = await judge.complete(system=JUDGE_SYSTEM.format(question=case.question, answer=result.rendered or ""),

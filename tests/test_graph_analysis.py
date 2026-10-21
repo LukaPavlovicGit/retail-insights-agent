@@ -13,6 +13,7 @@ GOOD_SQL = (
     f"SELECT p.category, SUM(oi.sale_price) AS revenue FROM `{DS}.order_items` oi "
     f"JOIN `{DS}.products` p ON p.id = oi.product_id GROUP BY 1 ORDER BY 2 DESC"
 )
+BRAND_IN = "IN ('Levi\\'s', 'Carhartt', 'Dockers', 'Wrangler')"
 PII_SQL = f"SELECT email FROM `{DS}.users`"
 ROWS = [{"category": "Jeans", "revenue": 1200.5}, {"category": "Pants", "revenue": 800.0}]
 
@@ -49,16 +50,16 @@ async def test_generate_sql_strips_fences_and_uses_examples(conn, settings):
     out = await make_generate_sql(deps)(state)
     assert out["sql"] == "SELECT 1" and len(out["llm_calls"]) == 1
     system = deps.llm.calls[0]["system"]
-    assert "monthly revenue" in system and "SELECT 2" in system and "Jeans, Pants" in system and "order_items" in system
+    assert "monthly revenue" in system and "SELECT 2" in system and "Levi's, Carhartt" in system and "order_items" in system
 
 
 async def test_guard_node_rewrites_and_dry_runs(conn, settings):
     tb = FakeToolBox()
     deps = make_deps(conn, settings, toolbox=tb)
     out = await make_guard_sql(deps)(turn_state("q", sql=GOOD_SQL))
-    assert "IN ('Jeans', 'Pants')" in out["sql"] and out["sql_error"] is None
+    assert BRAND_IN in out["sql"] and out["sql_error"] is None
     assert "scope:injected" in out["guard_events"] and "dryrun:ok" in out["guard_events"]
-    assert tb.calls[0][0] == "bq_dry_run" and "IN ('Jeans', 'Pants')" in tb.calls[0][1]["sql"]
+    assert tb.calls[0][0] == "bq_dry_run" and BRAND_IN in tb.calls[0][1]["sql"]
     assert route_after_guard(out) == "execute_sql"
 
 
@@ -116,7 +117,7 @@ async def test_give_up_messages(conn, settings):
     deps = make_deps(conn, settings)
     node = make_give_up(deps)
     empty = await node(turn_state("q", sql="SELECT 1", sql_error_kind="empty", sql_attempts=[{"sql": "SELECT 1", "error": "no rows", "kind": "empty", "row_count": 0, "bytes": 0}]))
-    assert empty["outcome"] == "no_data" and "Jeans, Pants" in empty["rendered"]
+    assert empty["outcome"] == "no_data" and "Levi's, Carhartt, Dockers, Wrangler" in empty["rendered"] and "brand" in empty["rendered"]
     unscoped = await node(turn_state("q", user=CAROL, sql="SELECT 1", sql_error_kind="empty", sql_attempts=[]))
     assert unscoped["outcome"] == "no_data" and "Your access covers" not in unscoped["rendered"] and "SELECT 1" in unscoped["rendered"]
     down = await node(turn_state("q", sql_error_kind="circuit_open", sql_attempts=[]))

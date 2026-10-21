@@ -67,13 +67,13 @@ def rows_to_markdown(rows: list[dict], limit: int = 20) -> str:
 
 
 def make_retrieve_trios(deps: Deps):
-    """Node `retrieve_trios`: reads `question` and the user's categories, writes `retrieved_trios` (up to 3 promoted
+    """Node `retrieve_trios`: reads `question` and the user's scope, writes `retrieved_trios` (up to 3 promoted
     Golden Trios visible to that user, by embedding similarity). No LLM call, one embedding call. Retrieval is
     best effort: on any error it writes an empty list and a `retrieval:failed` guard event instead of failing the
     turn. Always followed by `generate_sql` (or `fail` if an error is set)."""
     async def retrieve(state: dict) -> dict:
         try:
-            trios = await retrieve_trios(deps.trio_store, deps.embedder, state["question"], state["user"]["categories"], k=3)
+            trios = await retrieve_trios(deps.trio_store, deps.embedder, state["question"], state["user"]["scope"], k=3)
         except Exception as e:
             return {"retrieved_trios": [], "guard_events": state.get("guard_events", []) + [f"retrieval:failed:{type(e).__name__}"]}
         return {"retrieved_trios": [t.to_dict() for t in trios]}
@@ -107,8 +107,9 @@ def make_guard_sql(deps: Deps):
         sql = state.get("sql") or ""
         events = list(state.get("guard_events", []))
         attempts = list(state.get("sql_attempts", []))
-        r = guard_sql(sql, scope=state["user"]["categories"], dataset=deps.settings.dataset,
-                      row_cap=deps.settings.row_cap, schema=deps.schema)
+        r = guard_sql(sql, scope=state["user"]["scope"], scope_column=deps.settings.scope_column,
+                      dataset=deps.settings.dataset, row_cap=deps.settings.row_cap, schema=deps.schema,
+                      min_group_size=deps.settings.min_group_size)
         events += r.events
         if not r.ok:
             attempts.append(_attempt(sql, r.reason, "guard"))
@@ -214,10 +215,10 @@ def make_give_up(deps: Deps):
         attempts = state.get("sql_attempts", [])
         if kind == "empty":
             sql = state.get("sql") or ""
-            if state["user"]["categories"] is None:
+            if state["user"]["scope"] is None:
                 text = NO_DATA_TEXT_UNSCOPED.format(sql=sql)
             else:
-                text = NO_DATA_TEXT.format(scope=scope_text(state), sql=sql)
+                text = NO_DATA_TEXT.format(scope=scope_text(state, deps.settings.scope_column), sql=sql)
             return {"rendered": text, "outcome": "no_data"}
         if kind == "circuit_open":
             return {"rendered": DATA_SOURCE_DOWN_TEXT, "outcome": "error"}

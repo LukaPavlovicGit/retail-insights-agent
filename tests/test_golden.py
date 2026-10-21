@@ -82,8 +82,8 @@ async def test_search_filters_by_status_and_tags(store):
     ids = {}
     for q, tags, status in [
         ("top customers by spend", ["all"], "promoted"),
-        ("top customers by spend in jeans", ["Jeans"], "promoted"),
-        ("top customers by spend in swimwear", ["Swim"], "promoted"),
+        ("top customers by spend in jeans", ["Levi's"], "promoted"),
+        ("top customers by spend in swimwear", ["Speedo"], "promoted"),
         ("top customers by spend pending", ["all"], "pending"),
     ]:
         i = store.insert(trio(q, tags, status=status))
@@ -91,12 +91,12 @@ async def test_search_filters_by_status_and_tags(store):
         ids[q] = i
     assert store.missing_embeddings() == []
     vec = await e.embed("top customers by spend")
-    got = [t.question for t, _ in store.search(vec, categories=["Jeans"], k=5)]
+    got = [t.question for t, _ in store.search(vec, scope=["Levi's"], k=5)]
     assert "top customers by spend" in got
     assert "top customers by spend in jeans" in got
     assert "top customers by spend in swimwear" not in got
     assert "top customers by spend pending" not in got
-    got_all = [t.question for t, _ in store.search(vec, categories=None, k=5)]
+    got_all = [t.question for t, _ in store.search(vec, scope=None, k=5)]
     assert "top customers by spend in swimwear" in got_all
 
 
@@ -106,9 +106,9 @@ async def test_search_respects_k_and_distance(store):
         i = store.insert(trio(q))
         store.set_embedding(i, await e.embed(q, kind="document"))
     vec = await e.embed("revenue by month")
-    res = store.search(vec, categories=None, k=2)
+    res = store.search(vec, scope=None, k=2)
     assert len(res) == 2 and res[0][0].question == "revenue by month" and res[0][1] < 1e-6
-    far = store.search(await e.embed("elephants in the zoo"), categories=None, k=4, max_distance=0.1)
+    far = store.search(await e.embed("elephants in the zoo"), scope=None, k=4, max_distance=0.1)
     assert [t.question for t, _ in far] == ["elephants in the zoo"]
 
 
@@ -117,7 +117,7 @@ async def test_retrieve_trios(store):
     for q in ["monthly revenue trend", "top customers"]:
         i = store.insert(trio(q))
         store.set_embedding(i, await e.embed(q, kind="document"))
-    got = await retrieve_trios(store, e, "show me the monthly revenue trend", categories=None, k=1)
+    got = await retrieve_trios(store, e, "show me the monthly revenue trend", scope=None, k=1)
     assert [t.question for t in got] == ["monthly revenue trend"]
 
 

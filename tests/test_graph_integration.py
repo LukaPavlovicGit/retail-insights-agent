@@ -36,7 +36,7 @@ async def test_analysis_happy_path(conn, settings):
     assert t.intent == "analysis" and t.outcome == "ok" and len(t.llm_calls) == 3 and t.repairs == 0
     assert "scope:injected" in t.guard_events and t.bq_bytes == 99
     assert [n["node"] for n in t.node_timings][:3] == ["begin_turn", "router", "retrieve_trios"]
-    assert "IN ('Jeans', 'Pants')" in tb.calls[-1][1]["sql"]
+    assert "IN ('Levi\\'s', 'Carhartt', 'Dockers', 'Wrangler')" in tb.calls[-1][1]["sql"]
 
 
 async def test_repair_loop_recovers(conn, settings):

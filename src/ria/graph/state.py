@@ -13,13 +13,13 @@ from langgraph.graph.message import add_messages
 
 
 class UserCtx(TypedDict):
-    """The signed-in demo user, as returned by `db.get_user`. `categories` is the allowed product-category scope,
-    or None for an unrestricted user. The SQL guard enforces it; prompts only describe it."""
+    """The signed-in demo user, as returned by `db.get_user`. `scope` is the allowed values of
+    `Settings.scope_column` (brands by default), or None for an unrestricted user. The SQL guard enforces it; prompts only describe it."""
 
     id: str
     name: str
     role: str
-    categories: list[str] | None
+    scope: list[str] | None
 
 
 class AgentState(TypedDict, total=False):
