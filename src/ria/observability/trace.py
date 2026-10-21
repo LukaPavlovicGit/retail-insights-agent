@@ -138,7 +138,8 @@ class TraceStore:
         """Aggregate metrics over all turns, or those started at or after the ISO timestamp `since`.
 
         Returns `{"turns": 0}` when empty. Otherwise rates over all turns: success (`SUCCESS_OUTCOMES`), refusal, error (error, gave_up) and fallback-model use; `no_data` counts in none of the first
-        three. Also mean repairs (analysis turns only), guard rejections by check code, p50 and p95 latency,
+        three. `outage_turns` counts turns that failed with `LLMUnavailable` or whose last SQL attempt was refused by
+        the open circuit breaker. Also mean repairs (analysis turns only), guard rejections by check code, p50 and p95 latency,
         mean tokens and BigQuery bytes per turn, counts of good and bad ratings, the correction rate (corrected
         analysis turns / analysis turns), and turn counts by intent.
         """
@@ -164,6 +165,11 @@ class TraceStore:
             "refusal_rate": sum(t.outcome == "refused" for t in traces) / n,
             "error_rate": sum(t.outcome in ("error", "gave_up") for t in traces) / n,
             "fallback_rate": sum(t.fallback_used for t in traces) / n,
+            "outage_turns": sum(
+                (t.error or "").startswith("LLMUnavailable")
+                or bool(t.sql_attempts and t.sql_attempts[-1].get("kind") == "circuit_open")
+                for t in traces
+            ),
             "mean_repairs": (sum(t.repairs for t in analysis) / len(analysis)) if analysis else 0.0,
             "guard_rejections": dict(rejections),
             "p50_ms": _percentile(durations, 0.5),

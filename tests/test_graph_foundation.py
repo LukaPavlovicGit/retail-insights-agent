@@ -145,6 +145,20 @@ async def test_finalize_last_turn_id_only_for_answer_outcomes(conn, settings):
     assert "last_turn_id" not in await fin(turn_state("/schema", rendered="x", outcome="ok", intent="schema_overview"))
 
 
+async def test_finalize_discloses_fallback_model_on_answers_only(conn, settings):
+    from ria.graph.lifecycle import FALLBACK_NOTE
+    deps = make_deps(conn, settings)
+    fin = make_finalize(deps)
+    used = [{"node": "analyze", "fallback": True}]
+    out = await fin(turn_state("q", intent="analysis", rendered="Answer", outcome="ok", llm_calls=used))
+    assert out["rendered"] == "Answer\n\n" + FALLBACK_NOTE and out["rendered"].endswith("Note: answered with the backup model.")
+    assert out["messages"][-1].content == out["rendered"]
+    out = await fin(turn_state("/reports", rendered="Reports", outcome="listed", llm_calls=used))
+    assert out["rendered"] == "Reports"
+    out = await fin(turn_state("q", intent="analysis", rendered="Answer", outcome="ok", llm_calls=[{"node": "analyze", "fallback": False}]))
+    assert out["rendered"] == "Answer"
+
+
 async def test_router_marks_previous_turn_corrected(conn, settings):
     from ria.observability.trace import TurnTrace
     deps = make_deps(conn, settings, {"router": [RouteDecision(intent="analysis", is_correction=True), RouteDecision(intent="analysis", is_correction=True)]})
