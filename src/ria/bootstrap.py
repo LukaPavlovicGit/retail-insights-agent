@@ -29,7 +29,7 @@ def run_init(settings: Settings, conn, embedder: Embedder, schema_fetch: Callabl
     Returns a summary dict (counts, `schema_source` "live" or "static", `unknown_scope_values`, `scope_check`
     "ok" or "failed") that the CLI prints. Embedding errors propagate; schema and scope lookups never raise.
     """
-    users =db.load_users(conn, settings.users_path)
+    users = db.load_users(conn, settings.users_path)
     trios = load_trios_dir(settings.trios_dir)
     store = TrioStore(conn)
     store.replace_seed(trios)

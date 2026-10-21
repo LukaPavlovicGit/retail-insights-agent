@@ -131,9 +131,6 @@ class FakeToolBox:
         self.responses = {k: list(v) for k, v in (responses or {}).items()}
         self.calls: list[tuple[str, dict]] = []
 
-    async def reports_get(self, user_id, report_id) -> dict:
-        return await self._call("reports_get", user_id=user_id, report_id=report_id)
-
     async def _call(self, name: str, **kwargs) -> dict:
         self.calls.append((name, kwargs))
         queue = self.responses.get(name)
@@ -156,3 +153,6 @@ class FakeToolBox:
 
     async def reports_delete(self, user_id, ids) -> dict:
         return await self._call("reports_delete", user_id=user_id, ids=list(ids))
+
+    async def reports_get(self, user_id, report_id) -> dict:
+        return await self._call("reports_get", user_id=user_id, report_id=report_id)

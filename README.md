@@ -75,7 +75,7 @@ Start `uv run ria chat --user alice` and type these in order:
 
 1. `What data do we have and what can I ask about?`
    Schema answer from the cached schema; no BigQuery query.
-2. `Compare revenue of Levi's and Carhartt over the last 12 months`
+2. `Compare revenue of Levi's and Carhartt over the last 12 months.`
    Analysis. The SQL is filtered to Alice's brands by the guard.
 3. `Why is the gap so large?`
    Follow-up that uses the conversation so far.

@@ -142,6 +142,7 @@ async def test_finalize_last_turn_id_only_for_answer_outcomes(conn, settings):
     for outcome in ("rated", "help", "listed", "shown"):
         assert "last_turn_id" not in await fin(turn_state("q", rendered="x", outcome=outcome, turn_id="T"))
     assert "last_turn_id" not in await fin(turn_state("q", rendered="x", outcome="ok", intent="rating"))
+    assert "last_turn_id" not in await fin(turn_state("/schema", rendered="x", outcome="ok", intent="schema_overview"))
 
 
 async def test_router_marks_previous_turn_corrected(conn, settings):

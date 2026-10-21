@@ -67,6 +67,7 @@ Rules:
 - Exactly one SELECT statement. No DML, no DDL, no comments, no markdown fences.
 - Use fully qualified table names with backticks.
 - Never select personal columns (email, names, address, postal code, coordinates).
+- Demographics (state, city, country, age, gender, traffic source) may only appear grouped over customers, never next to a customer, order or item id; groups under the minimum size are dropped.
 - Compute revenue and churn as defined in the business definitions above, unless the question is about returns or names its own window or statuses.
 - Prefer SAFE_DIVIDE for ratios and ROUND for money.
 - Keep result sets small: aggregate, order by the metric that answers the question, and limit to what the reader needs.
