@@ -129,12 +129,31 @@ def guard_sql(
                 found += [(t, col.name) for t in alias_to_tables.get(col.table, ())]
         return found
 
+    customer_ids = {("users", "id"), ("order_items", "user_id"), ("orders", "user_id")}
+    count_like = (exp.Count, exp.ApproxDistinct)
+
+    def exposes_individuals() -> bool:
+        """A select list anywhere returns a customer id outside an aggregate or inside a non-count aggregate."""
+        for sel in tree.find_all(exp.Select):
+            for item in sel.expressions:
+                for col in item.find_all(exp.Column):
+                    if col.parent_select is not sel or not any((t, col.name) in customer_ids for t in alias_to_tables.get(col.table, ())):
+                        continue
+                    agg = col.find_ancestor(exp.AggFunc)
+                    if agg is None or not isinstance(agg, count_like):
+                        return True
+        return False
+
+    def touches_demographics() -> bool:
+        return any(
+            col.name in DEMOGRAPHIC_COLUMNS and "users" in alias_to_tables.get(col.table, ())
+            for col in tree.find_all(exp.Column)
+        )
+
+    if exposes_individuals() and touches_demographics():
+        return reject("demographics", "Demographics may only appear in aggregates, never alongside an individual customer id")
+
     for sel in list(tree.find_all(exp.Select)):
-        select_cols = [c for item in sel.expressions for c in bare_columns(item, sel)]
-        has_demo = any(t == "users" and c in DEMOGRAPHIC_COLUMNS for t, c in select_cols)
-        has_id = any((t, c) in {("users", "id"), ("order_items", "user_id"), ("orders", "user_id")} for t, c in select_cols)
-        if has_demo and has_id:
-            return reject("demographics", "Demographics may only appear in aggregates, never alongside an individual customer id")
         group = sel.args.get("group")
         if group is None:
             continue

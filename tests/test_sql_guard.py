@@ -226,3 +226,41 @@ def test_demographics_min_group_uses_order_items_user_id_without_users_table():
 def test_demographics_min_group_size_setting():
     r = guard_sql(f"SELECT u.gender, COUNT(*) AS n FROM {U} u JOIN {OI} oi ON oi.user_id = u.id JOIN {P} p ON p.id = oi.product_id GROUP BY u.gender", scope=None, dataset=DS, min_group_size=25)
     assert ">= 25" in r.sql
+
+
+JOINS = f"FROM {OI} oi JOIN {U} u ON u.id = oi.user_id JOIN {P} p ON p.id = oi.product_id"
+
+BYPASSES = {
+    "any_value": f"SELECT oi.user_id, ANY_VALUE(u.city) AS c, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1",
+    "max": f"SELECT oi.user_id, MAX(u.state) AS st {JOINS} GROUP BY 1",
+    "window": f"SELECT oi.user_id, MAX(u.state) OVER (PARTITION BY oi.user_id) AS st {JOINS}",
+    "cte": f"WITH d AS (SELECT id, ANY_VALUE(state) AS st FROM {U} GROUP BY id) SELECT d.st, oi.user_id FROM {OI} oi JOIN d ON d.id = oi.user_id JOIN {P} p ON p.id = oi.product_id",
+    "array_agg": f"WITH d AS (SELECT state, ARRAY_AGG(id) AS ids FROM {U} GROUP BY state) SELECT state, uid FROM d, UNNEST(d.ids) AS uid",
+    "where_filter": f"SELECT oi.user_id, SUM(oi.sale_price) AS s {JOINS} WHERE u.state = 'Texas' GROUP BY 1",
+}
+
+
+@pytest.mark.parametrize("name", BYPASSES)
+def test_demographics_rejects_bypass(name):
+    r = g(BYPASSES[name], categories=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_allows_count_distinct_with_demographic():
+    r = g(f"SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers {JOINS} GROUP BY u.state", categories=None)
+    assert r.ok
+
+
+def test_demographics_allows_non_demographic_with_ids():
+    r = g(f"SELECT oi.user_id, p.brand, SUM(oi.sale_price) AS s {JOINS} GROUP BY 1, 2", categories=None)
+    assert r.ok
+
+
+def test_demographics_allows_filter_with_counted_ids():
+    r = g(f"SELECT COUNT(DISTINCT oi.user_id) AS n {JOINS} WHERE u.state = 'Texas'", categories=None)
+    assert r.ok
+
+
+def test_demographics_multi_column_group_by_adds_one_having():
+    r = g(f"SELECT u.state, u.gender, COUNT(*) AS n {JOINS} GROUP BY u.state, u.gender", categories=None)
+    assert r.ok and r.sql.count("HAVING") == 1 and r.events.count("demographics:min_group") == 1
