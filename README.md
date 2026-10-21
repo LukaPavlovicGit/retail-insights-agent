@@ -138,7 +138,7 @@ sits next to it and is edited the same way.
 uv run pytest
 ```
 
-204 tests, no network or credentials needed. Model, embedding and MCP calls are replaced by
+221 tests, no network or credentials needed. Model, embedding and MCP calls are replaced by
 scripted fakes.
 
 ## Free-tier note

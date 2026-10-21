@@ -9,7 +9,7 @@ Requirements 2, 3, 5 and 7 are fully implemented in the prototype. Requirements 
 8 have a thin working version in the prototype plus a production design.
 
 All paths below are relative to `src/ria/` unless they start with `tests/`, `data/` or
-`evals/`. The test suite has 204 tests and runs offline (`uv run pytest`).
+`evals/`. The test suite has 221 tests and runs offline (`uv run pytest`).
 
 OpsFleet answered the clarification questions after the first version. Section 13 lists the
 answers, what each one changed, and the items still open.
@@ -449,7 +449,7 @@ user meant.
 
 **Prototype.**
 
-- **Unit tests.** 204 tests, no network, under 3 s. Guards, masker, retrieval, preference
+- **Unit tests.** 221 tests, no network, under 3 s. Guards, masker, retrieval, preference
   extraction, report target resolution, LLM retry and fallback, BigQuery error
   classification and breaker, trace store and stats, CLI pieces.
 - **Graph tests with fakes.** `llm/fake.py` (`FakeLLM`) returns scripted outputs per node
