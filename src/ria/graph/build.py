@@ -1,6 +1,6 @@
 """Assemble the per-turn LangGraph: every node, every edge, and the routing tables.
 
-Flow of one turn: begin_turn -> router -> one intent branch -> finalize -> update_memory -> write_trace -> END.
+Flow of one turn: begin_turn -> pre_router (slash commands skip the router) -> router -> one intent branch -> finalize -> update_memory -> write_trace -> END.
 The analysis branch is retrieve_trios -> generate_sql -> guard_sql -> execute_sql -> analyze -> render, with
 guard_sql and execute_sql able to loop through repair_sql or stop at give_up. Any node can divert to `fail`
 by setting `state["error"]`; all terminal branches pass through finalize so masking, memory and tracing always run.
@@ -15,11 +15,14 @@ from ria.graph.analysis import (
     make_retrieve_trios, route_after_execute, route_after_guard,
 )
 from ria.graph.deps import Deps
-from ria.graph.library import make_confirm_delete, make_resolve_targets, make_save_report, route_after_resolve
+from ria.graph.library import (
+    make_confirm_delete, make_list_reports, make_resolve_targets, make_save_report, make_show_report, route_after_resolve,
+)
 from ria.graph.lifecycle import make_begin_turn, make_fail, make_finalize, make_update_memory, make_write_trace
 from ria.graph.nodes_common import after, route_intent, timed
-from ria.graph.router import make_ack_preference, make_refuse, make_router
-from ria.graph.schema_qa import make_schema_answer
+from ria.graph.prerouter import make_pre_router
+from ria.graph.router import make_ack_preference, make_help, make_rating, make_refuse, make_router
+from ria.graph.schema_qa import make_schema_answer, make_schema_overview
 from ria.graph.state import AgentState
 
 # Router intent -> first node of that branch ("fail" is returned by route_intent when state["error"] is set).
@@ -30,6 +33,11 @@ INTENT_ROUTES = {
     "report_delete": "resolve_targets",
     "preference_update": "ack_preference",
     "off_topic": "refuse",
+    "report_list": "list_reports",
+    "report_show": "show_report",
+    "schema_overview": "schema_overview",
+    "rating": "rating",
+    "help": "help",
     "fail": "fail",
 }
 
@@ -51,6 +59,8 @@ def build_graph(deps: Deps, checkpointer=None):
         "analyze": make_analyze, "render": make_render, "save_report": make_save_report,
         "resolve_targets": make_resolve_targets, "confirm_delete": make_confirm_delete, "fail": make_fail,
         "finalize": make_finalize, "update_memory": make_update_memory, "write_trace": make_write_trace,
+        "pre_router": make_pre_router, "list_reports": make_list_reports, "show_report": make_show_report,
+        "schema_overview": make_schema_overview, "rating": make_rating, "help": make_help,
     }
     for name, factory in factories.items():
         g.add_node(name, timed(name, factory(deps), deps.clock))
@@ -62,7 +72,12 @@ def build_graph(deps: Deps, checkpointer=None):
         return route_after_execute(state, max_repairs=s.max_repairs)
 
     g.add_edge(START, "begin_turn")
-    g.add_conditional_edges("begin_turn", after("router"), {"router": "router", "fail": "fail"})
+    def after_pre_router(state: dict) -> str:
+        # A recognised command carries its intent; plain text has none and goes on to the LLM router.
+        return route_intent(state) if state.get("error") or state.get("intent") else "router"
+
+    g.add_conditional_edges("begin_turn", after("pre_router"), {"pre_router": "pre_router", "fail": "fail"})
+    g.add_conditional_edges("pre_router", after_pre_router, {**INTENT_ROUTES, "router": "router"})
     g.add_conditional_edges("router", route_intent, INTENT_ROUTES)
     g.add_conditional_edges("retrieve_trios", after("generate_sql"), {"generate_sql": "generate_sql", "fail": "fail"})
     g.add_conditional_edges("generate_sql", after("guard_sql"), {"guard_sql": "guard_sql", "fail": "fail"})
@@ -73,7 +88,8 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_conditional_edges("schema_answer", after("finalize"), {"finalize": "finalize", "fail": "fail"})
     g.add_conditional_edges("save_report", after("finalize"), {"finalize": "finalize", "fail": "fail"})
     g.add_conditional_edges("resolve_targets", route_after_resolve, {"confirm_delete": "confirm_delete", "finalize": "finalize", "fail": "fail"})
-    for name in ("render", "refuse", "ack_preference", "give_up", "confirm_delete", "fail"):
+    for name in ("render", "refuse", "ack_preference", "give_up", "confirm_delete", "fail",
+                 "list_reports", "show_report", "schema_overview", "rating", "help"):
         g.add_edge(name, "finalize")
     g.add_edge("finalize", "update_memory")
     g.add_edge("update_memory", "write_trace")

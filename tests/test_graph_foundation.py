@@ -6,7 +6,9 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from ria.graph.lifecycle import make_begin_turn, make_fail, make_finalize, make_update_memory, make_write_trace
 from ria.graph.nodes_common import BudgetExceeded, after, call_llm, route_intent, scope_text, timed
 from ria.graph.router import RouteDecision, make_ack_preference, make_refuse, make_router
-from ria.graph.schema_qa import make_schema_answer
+from ria.graph.prerouter import make_pre_router
+from ria.graph.router import make_help, make_rating
+from ria.graph.schema_qa import make_schema_answer, make_schema_overview
 from ria.llm.client import LLMUnavailable
 from tests.graph_fixtures import CAROL, make_deps, turn_state
 
@@ -74,6 +76,40 @@ async def test_schema_answer(conn, settings):
     assert "order_items" in deps.llm.calls[0]["system"]
 
 
+async def test_pre_router_sets_intent_for_commands_only(conn, settings):
+    node = make_pre_router(make_deps(conn, settings))
+    assert await node(turn_state("how are jeans doing?")) == {}
+    out = await node(turn_state("/reports"))
+    assert out["intent"] == "report_list" and out["command"]["kind"] == "reports"
+    out = await node(turn_state("/delete mentioning Acme"))
+    assert out["intent"] == "report_delete" and (out["report_filter_scope"], out["report_filter_text"]) == ("text", "Acme")
+    assert (await node(turn_state("/report 4")))["intent"] == "report_show"
+    assert (await node(turn_state("/schema")))["intent"] == "schema_overview"
+    assert (await node(turn_state("/bad no")))["intent"] == "rating" and (await node(turn_state("/help")))["intent"] == "help"
+
+
+async def test_rating_node(conn, settings):
+    from ria.observability.trace import TurnTrace
+    deps = make_deps(conn, settings)
+    deps.trace_store.save(TurnTrace(turn_id="prev", thread_id="t1", user_id="alice", intent="analysis", outcome="ok",
+                                    started_at="2026-10-16T10:00:00+00:00", duration_ms=1))
+    node = make_rating(deps)
+    none = await node(turn_state("/good", command={"kind": "rating", "rating": 1, "note": ""}))
+    assert none["rendered"] == "Nothing to rate yet. Ask a question first." and none["outcome"] == "ok"
+    out = await node(turn_state("/bad slow", last_turn_id="prev", command={"kind": "rating", "rating": -1, "note": "slow"}))
+    assert out["outcome"] == "rated" and "thumbs down" in out["rendered"]
+    t = deps.trace_store.get("prev")
+    assert (t.rating, t.rating_note) == (-1, "slow") and deps.llm.calls == []
+
+
+async def test_help_and_schema_overview_make_no_model_call(conn, settings):
+    deps = make_deps(conn, settings)
+    h = await make_help(deps)(turn_state("/help"))
+    assert h["outcome"] == "help" and "/reports" in h["rendered"]
+    s = await make_schema_overview(deps)(turn_state("/schema"))
+    assert s["outcome"] == "ok" and "order_items" in s["rendered"] and deps.llm.calls == []
+
+
 async def test_begin_turn_resets_and_summarizes(conn, settings):
     deps = make_deps(conn, settings, {"summarize": ["Earlier: asked about jeans."]})
     msgs = []
@@ -88,6 +124,35 @@ async def test_begin_turn_resets_and_summarizes(conn, settings):
     removed = [m for m in out["messages"] if isinstance(m, RemoveMessage)]
     assert len(removed) == 21 - 2 * settings.window_turns
     assert out["llm_calls"][0]["node"] == "summarize"
+
+
+async def test_begin_turn_skips_summary_when_model_down(conn, settings):
+    deps = make_deps(conn, settings, {"summarize": [LLMUnavailable("down")]})
+    state = turn_state("/reports")
+    state["messages"] = [HumanMessage(content=f"q{i}", id=f"h{i}") for i in range(30)]
+    out = await make_begin_turn(deps)(state)
+    assert "summary" not in out and "messages" not in out and out["guard_events"] == ["summary:skipped_llm_unavailable"]
+
+
+async def test_finalize_last_turn_id_only_for_answer_outcomes(conn, settings):
+    deps = make_deps(conn, settings)
+    fin = make_finalize(deps)
+    for outcome in ("ok", "no_data", "gave_up", "refused", "error", "saved", "deleted", "cancelled"):
+        assert (await fin(turn_state("q", rendered="x", outcome=outcome, turn_id="T")))["last_turn_id"] == "T"
+    for outcome in ("rated", "help", "listed", "shown"):
+        assert "last_turn_id" not in await fin(turn_state("q", rendered="x", outcome=outcome, turn_id="T"))
+    assert "last_turn_id" not in await fin(turn_state("q", rendered="x", outcome="ok", intent="rating"))
+
+
+async def test_router_marks_previous_turn_corrected(conn, settings):
+    from ria.observability.trace import TurnTrace
+    deps = make_deps(conn, settings, {"router": [RouteDecision(intent="analysis", is_correction=True), RouteDecision(intent="analysis", is_correction=True)]})
+    deps.trace_store.save(TurnTrace(turn_id="prev", thread_id="t1", user_id="alice", intent="analysis", outcome="ok",
+                                    started_at="2026-10-16T10:00:00+00:00", duration_ms=1))
+    first = await make_router(deps)(turn_state("no, I meant last year"))  # no last_turn_id yet
+    assert first["correction_of"] is None and not deps.trace_store.get("prev").corrected
+    out = await make_router(deps)(turn_state("no, I meant last year", last_turn_id="prev"))
+    assert out["correction_of"] == "prev" and deps.trace_store.get("prev").corrected
 
 
 async def test_begin_turn_short_history_no_summary(conn, settings):

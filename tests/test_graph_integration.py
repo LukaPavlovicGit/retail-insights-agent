@@ -35,7 +35,7 @@ async def test_analysis_happy_path(conn, settings):
     t = deps.trace_store.get("turn-1")
     assert t.intent == "analysis" and t.outcome == "ok" and len(t.llm_calls) == 3 and t.repairs == 0
     assert "scope:injected" in t.guard_events and t.bq_bytes == 99
-    assert [n["node"] for n in t.node_timings][:3] == ["begin_turn", "router", "retrieve_trios"]
+    assert [n["node"] for n in t.node_timings][:4] == ["begin_turn", "pre_router", "router", "retrieve_trios"]
     assert "IN ('Levi\\'s', 'Carhartt', 'Dockers', 'Wrangler')" in tb.calls[-1][1]["sql"]
 
 
@@ -114,3 +114,80 @@ async def test_context_summary_kicks_in(conn, tmp_path):
     assert state.values["summary"] == "They chatted."
     assert len(state.values["messages"]) <= 2 * settings.window_turns + 2
     assert any(c["node"] == "summarize" for c in deps.trace_store.get("turn-2").llm_calls)
+
+
+def models_down(conn, settings, toolbox=None, settings_override=None):
+    app, deps = app_for(conn, settings_override or settings, {}, toolbox)
+    deps.llm.default = LLMUnavailable("down")
+    return app, deps
+
+
+async def test_commands_work_with_both_models_down(conn, settings):
+    report = {"id": 1, "title": "Jeans review", "question": "q", "sql": "SELECT 1", "body": "Jeans grew.", "created_at": "2026-10-16"}
+    tb = FakeToolBox({"reports_search": [{"reports": [{"id": 1, "title": "Jeans review", "created_at": "2026-10-16", "thread_id": "t1"}]}],
+                      "reports_get": [{"report": report}]})
+    app, deps = models_down(conn, settings, tb)
+    expected = [("/good", "ok", "Nothing to rate yet"), ("/reports", "listed", "Jeans review"), ("/report 1", "shown", "Jeans grew."),
+                ("/schema", "ok", "order_items"), ("/help", "help", "/reports")]
+    for i, (text, outcome, needle) in enumerate(expected):
+        r = await run_turn(app, ALICE, "t1", text, new_turn_id=lambda i=i: f"cmd-{i}")
+        assert r.outcome == outcome and needle in r.rendered, text
+        t = deps.trace_store.get(f"cmd-{i}")
+        assert t is not None and t.outcome == outcome and t.llm_calls == [] and t.error is None
+        assert "router" not in [n["node"] for n in t.node_timings]
+    assert deps.llm.calls == []
+
+
+async def test_delete_command_asks_for_confirmation_with_models_down(conn, settings):
+    tb = FakeToolBox({"reports_search": [{"reports": [{"id": 3, "title": "Jeans review", "created_at": "2026-10-16", "thread_id": "t1"}]}],
+                      "reports_delete": [{"deleted": 1}]})
+    app, deps = models_down(conn, settings, tb)
+    pending = await run_turn(app, ALICE, "t1", "/delete from this conversation")
+    assert pending.outcome == "needs_confirmation" and pending.interrupt["reports"][0]["id"] == 3
+    assert tb.calls[0] == ("reports_search", {"user_id": "alice", "text": None, "thread_id": "t1"})
+    done = await run_turn(app, ALICE, "t1", "", resume={"confirmed": True})
+    assert done.outcome == "deleted" and deps.llm.calls == []
+
+
+async def test_command_routes_with_overflowing_window_and_models_down(conn, tmp_path):
+    settings = Settings(db_path=tmp_path / "x.db", data_dir=tmp_path, embedding_dim=32, window_turns=1)
+    app, deps = models_down(conn, settings)
+    for i in range(3):
+        await run_turn(app, ALICE, "t1", "/help", new_turn_id=lambda i=i: f"h-{i}")
+    r = await run_turn(app, ALICE, "t1", "/reports", new_turn_id=lambda: "after")
+    assert r.outcome == "listed"
+    t = deps.trace_store.get("after")
+    assert "summary:skipped_llm_unavailable" in t.guard_events and t.error is None
+
+
+async def test_rating_applies_to_last_answer_not_to_listing(conn, settings):
+    tb = FakeToolBox({"bq_query": [OK_QUERY]})
+    app, deps = app_for(conn, settings, {"router": [ANALYSIS], "generate_sql": [SqlPlan(sql=GOOD_SQL)], "analyze": ["Jeans lead."]}, tb)
+    await run_turn(app, ALICE, "t1", "which category leads?", new_turn_id=lambda: "a1")
+    listing = await run_turn(app, ALICE, "t1", "/reports", new_turn_id=lambda: "l1")
+    assert listing.outcome == "listed"
+    rated = await run_turn(app, ALICE, "t1", "/good nice", new_turn_id=lambda: "r1")
+    assert rated.outcome == "rated"
+    assert (deps.trace_store.get("a1").rating, deps.trace_store.get("a1").rating_note) == (1, "nice")
+    assert deps.trace_store.get("l1").rating is None and deps.trace_store.get("r1").rating is None
+    # rating again still targets the analysis turn
+    await run_turn(app, ALICE, "t1", "/bad", new_turn_id=lambda: "r2")
+    assert deps.trace_store.get("a1").rating == -1
+
+
+async def test_good_as_first_turn_does_not_become_the_rating_target(conn, settings):
+    app, deps = models_down(conn, settings)
+    first = await run_turn(app, ALICE, "t1", "/good", new_turn_id=lambda: "g1")
+    second = await run_turn(app, ALICE, "t1", "/good", new_turn_id=lambda: "g2")
+    assert "Nothing to rate yet" in first.rendered and "Nothing to rate yet" in second.rendered
+    assert deps.trace_store.get("g1").rating is None
+
+
+async def test_correction_marks_previous_turn(conn, settings):
+    tb = FakeToolBox({"bq_query": [OK_QUERY, OK_QUERY]})
+    app, deps = app_for(conn, settings, {
+        "router": [ANALYSIS, RouteDecision(intent="analysis", reason="redo", is_correction=True)],
+        "generate_sql": [SqlPlan(sql=GOOD_SQL), SqlPlan(sql=GOOD_SQL)], "analyze": ["First.", "Second."]}, tb)
+    await run_turn(app, ALICE, "t1", "which category leads?", new_turn_id=lambda: "c1")
+    await run_turn(app, ALICE, "t1", "no, I meant by brand", new_turn_id=lambda: "c2")
+    assert deps.trace_store.get("c1").corrected and not deps.trace_store.get("c2").corrected

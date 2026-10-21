@@ -31,6 +31,7 @@ class ToolBox(Protocol):
     async def reports_save(self, user_id: str, thread_id: str, title: str, question: str, sql: str, body: str, tags: list[str]) -> dict: ...
     async def reports_search(self, user_id: str, text: str | None = None, thread_id: str | None = None) -> dict: ...
     async def reports_delete(self, user_id: str, ids: list[int]) -> dict: ...
+    async def reports_get(self, user_id: str, report_id: int) -> dict: ...
 
 
 def _decode(out: Any) -> dict:
@@ -73,6 +74,9 @@ class MCPToolBox:
 
     async def reports_delete(self, user_id, ids) -> dict:
         return await self._call("reports_delete", user_id=user_id, ids=list(ids))
+
+    async def reports_get(self, user_id, report_id) -> dict:
+        return await self._call("reports_get", user_id=user_id, report_id=report_id)
 
 
 @asynccontextmanager
@@ -120,11 +124,15 @@ class FakeToolBox:
         "reports_save": {"ok": True, "id": 1},
         "reports_search": {"reports": []},
         "reports_delete": {"deleted": 0},
+        "reports_get": {"report": None},
     }
 
     def __init__(self, responses: dict[str, list[dict]] | None = None):
         self.responses = {k: list(v) for k, v in (responses or {}).items()}
         self.calls: list[tuple[str, dict]] = []
+
+    async def reports_get(self, user_id, report_id) -> dict:
+        return await self._call("reports_get", user_id=user_id, report_id=report_id)
 
     async def _call(self, name: str, **kwargs) -> dict:
         self.calls.append((name, kwargs))
