@@ -89,9 +89,13 @@ class Settings:
 _STATUSES = ("Complete", "Shipped", "Processing", "Cancelled", "Returned")
 
 
+class OrgDefaultsInvalid(ValueError):
+    """`data/org_defaults.yaml` cannot be read as org defaults (bad YAML, unknown key or invalid value)."""
+
+
 def _int_in(key: str, value: object, lo: int, hi: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
-        raise ValueError(f"{key} must be an integer from {lo} to {hi}, got {value!r}")
+        raise OrgDefaultsInvalid(f"{key} must be an integer from {lo} to {hi}, got {value!r}")
     return value
 
 
@@ -106,16 +110,19 @@ class OrgDefaults:
 
     @classmethod
     def load(cls, path: Path) -> "OrgDefaults":
-        """Read `path`; a missing or empty file gives the defaults, an invalid value raises `ValueError` naming the key."""
+        """Read `path`; a missing or empty file gives the defaults, an invalid file or value raises `OrgDefaultsInvalid` (a `ValueError`) naming the file or key."""
         p = Path(path)
         if not p.exists():
             return cls()
-        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        try:
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as e:
+            raise OrgDefaultsInvalid(f"{p.name}: {e}") from e
         if not isinstance(raw, dict):
-            raise ValueError(f"{p.name} must be a mapping of keys to values")
+            raise OrgDefaultsInvalid(f"{p.name} must be a mapping of keys to values")
         unknown = set(raw) - {"churn_window_days", "revenue_statuses", "min_group_size"}
         if unknown:
-            raise ValueError(f"unknown key in {p.name}: {', '.join(sorted(map(str, unknown)))}")
+            raise OrgDefaultsInvalid(f"unknown key in {p.name}: {', '.join(sorted(map(str, unknown)))}")
         kwargs: dict = {}
         if "churn_window_days" in raw:
             kwargs["churn_window_days"] = _int_in("churn_window_days", raw["churn_window_days"], 1, 3650)
@@ -124,7 +131,9 @@ class OrgDefaults:
         if "revenue_statuses" in raw:
             s = raw["revenue_statuses"]
             if not isinstance(s, list) or not s or any(x not in _STATUSES for x in s):
-                raise ValueError(f"revenue_statuses must be a non-empty list of {', '.join(_STATUSES)}, got {s!r}")
+                raise OrgDefaultsInvalid(f"revenue_statuses must be a non-empty list of {', '.join(_STATUSES)}, got {s!r}")
+            if len(set(s)) != len(s):
+                raise OrgDefaultsInvalid(f"revenue_statuses must not repeat a status, got {s!r}")
             kwargs["revenue_statuses"] = tuple(s)
         return cls(**kwargs)
 

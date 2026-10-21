@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ria import db
-from ria.config import OrgDefaults, Settings, render_definitions
+from ria.config import OrgDefaults, OrgDefaultsInvalid, Settings, render_definitions
 
 
 def test_settings_defaults():
@@ -33,7 +33,9 @@ def test_org_defaults_load_and_fallback(tmp_path):
     assert OrgDefaults.load(f) == OrgDefaults(min_group_size=5)
     f.write_text("")
     assert OrgDefaults.load(f) == OrgDefaults()
-    assert OrgDefaults.load(Path("data") / "org_defaults.yaml") == OrgDefaults()
+    p = Path(__file__).resolve().parents[1] / "data" / "org_defaults.yaml"
+    assert p.exists()
+    assert OrgDefaults.load(p) == OrgDefaults()
 
 
 @pytest.mark.parametrize("text,key", [
@@ -48,11 +50,21 @@ def test_org_defaults_load_and_fallback(tmp_path):
     ("min_group_size: 1001", "min_group_size"),
     ("min_group_size: 2.5", "min_group_size"),
     ("bogus_key: 1", "bogus_key"),
+    ("revenue_statuses: [Complete, Complete]", "revenue_statuses"),
+    ("- Complete", "mapping"),
+    ('churn_window_days: "90"', "churn_window_days"),
 ])
 def test_org_defaults_validation_names_key(tmp_path, text, key):
     f = tmp_path / "org_defaults.yaml"
     f.write_text(text + "\n")
-    with pytest.raises(ValueError, match=key):
+    with pytest.raises(OrgDefaultsInvalid, match=key):
+        OrgDefaults.load(f)
+
+
+def test_org_defaults_yaml_syntax_error_names_file(tmp_path):
+    f = tmp_path / "org_defaults.yaml"
+    f.write_text("revenue_statuses: [Complete\n")
+    with pytest.raises(ValueError, match="org_defaults.yaml"):
         OrgDefaults.load(f)
 
 

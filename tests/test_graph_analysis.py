@@ -158,12 +158,15 @@ async def test_prompts_carry_business_definitions(conn, settings):
 
 async def test_guard_node_uses_org_default_group_size(conn, settings):
     settings.data_dir.mkdir(parents=True)
-    (settings.org_defaults_path).write_text("min_group_size: 25\n")
-    deps = make_deps(conn, settings)
+    (settings.org_defaults_path).write_text("min_group_size: 25\nchurn_window_days: 30\nrevenue_statuses: [Complete]\n")
+    deps = make_deps(conn, settings, {"generate_sql": [SqlPlan(plan="p", sql="SELECT 1")]})
     sql = (f"SELECT u.gender, COUNT(*) AS n FROM `{DS}.users` u JOIN `{DS}.order_items` oi ON oi.user_id = u.id "
            f"JOIN `{DS}.products` p ON p.id = oi.product_id GROUP BY u.gender")
     out = await make_guard_sql(deps)(turn_state("q", sql=sql))
     assert ">= 25" in out["sql"]
+    await make_generate_sql(deps)(turn_state("q"))
+    system = deps.llm.calls[0]["system"]
+    assert "30 days" in system and "revenue counts items with status Complete)" in system
 
 
 async def test_render_table_and_deep(conn, settings):

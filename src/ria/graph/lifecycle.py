@@ -117,7 +117,7 @@ def make_write_trace(deps: Deps):
 
 def make_fail(deps: Deps):
     """Node `fail`: target of every edge when `state["error"]` is set. Picks a user-facing message by error text:
-    LLM-call budget exceeded, model unavailable (nothing was lost), or a generic message that quotes the turn id so
+    LLM-call budget exceeded, model unavailable (nothing was lost), an invalid org defaults file, or a generic message that quotes the turn id so
     the trace can be found. The error string itself is kept in state for the trace. Followed by `finalize`."""
     async def fail(state: dict) -> dict:
         err = state.get("error") or "unknown error"
@@ -125,6 +125,9 @@ def make_fail(deps: Deps):
             text = "I hit the per-question budget before finishing. Try a narrower question, or ask again in a moment."
         elif "LLMUnavailable" in err:
             text = "The language model is unavailable right now (rate limit or outage). Nothing was lost; please retry shortly."
+        elif err.startswith("OrgDefaultsInvalid"):
+            detail = err.removeprefix("OrgDefaultsInvalid: ")
+            text = f"The org defaults file is invalid: {detail}. Ask the data team to fix data/org_defaults.yaml."
         else:
             text = ERROR_TEXT.format(turn_id=state.get("turn_id", "?"))
         return {"rendered": text, "outcome": "error"}

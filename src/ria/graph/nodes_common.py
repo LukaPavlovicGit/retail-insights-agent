@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, Sequence
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
 
-from ria.config import join_statuses, render_definitions
+from ria.config import OrgDefaultsInvalid, join_statuses, render_definitions
 from ria.graph.deps import Deps
 from ria.llm.client import LLMResult, LLMUnavailable
 
@@ -25,14 +25,14 @@ Node = Callable[[dict], Awaitable[dict]]
 
 
 def timed(name: str, fn: Node, clock=time.perf_counter) -> Node:
-    """Wrap a node to append `{node, ms}` to `node_timings` and to convert `LLMUnavailable` and `BudgetExceeded`
-    into `{"error": ..., "outcome": "error"}`, which the edge functions route to `fail`. Other exceptions are
+    """Wrap a node to append `{node, ms}` to `node_timings` and to convert `LLMUnavailable`, `BudgetExceeded` and
+    `OrgDefaultsInvalid` into `{"error": ..., "outcome": "error"}`, which the edge functions route to `fail`. Other exceptions are
     deliberately not caught: they are bugs and should surface."""
     async def wrapped(state: dict) -> dict:
         t0 = clock()
         try:
             out = await fn(state)
-        except (LLMUnavailable, BudgetExceeded) as e:
+        except (LLMUnavailable, BudgetExceeded, OrgDefaultsInvalid) as e:
             out = {"error": f"{type(e).__name__}: {e}", "outcome": "error"}
         out = dict(out or {})
         out["node_timings"] = list(state.get("node_timings", [])) + [{"node": name, "ms": int((clock() - t0) * 1000)}]
