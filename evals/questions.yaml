@@ -130,3 +130,13 @@
   question: Delete all reports mentioning Client Zeta.
   intent: report_delete
   outcome: ok
+- id: command-reports
+  user: bob
+  question: /reports
+  intent: report_list
+  outcome: listed
+- id: command-help
+  user: bob
+  question: /help
+  intent: help
+  outcome: help

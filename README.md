@@ -3,7 +3,7 @@
 A data-analysis chat assistant for non-technical retail executives. You ask questions about
 sales, products, customers, returns and delivery in plain English. The agent writes BigQuery
 SQL over the public `bigquery-public-data.thelook_ecommerce` dataset, checks and rewrites it
-in code (SELECT only, no personal columns, limited to your product categories), runs it
+in code (SELECT only, no personal columns, limited to your brands), runs it
 read-only, and explains the result. It can save answers as reports and delete reports after
 you confirm. It is built with LangGraph, Gemini, an MCP tool server, and SQLite with
 sqlite-vec.
@@ -40,16 +40,34 @@ uv run ria init
 uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
 ```
 
+If you upgrade from an older checkout, delete `ria.db` and run `ria init` again.
+
 - `ria doctor` checks the Gemini key, Google credentials, a BigQuery dry run, and one Gemini
   call.
 - `ria init` loads the demo users and the 15 seed Golden Trios into `ria.db`, embeds the
   Trio questions, caches the live BigQuery schema in `data/schema.json`, and checks that the
-  categories in `data/users.yaml` exist in the dataset. Run it again after promoting a Trio.
-- Demo users: `alice` (VP Apparel: Jeans, Pants, Shorts, Sweaters, Tops & Tees), `bob`
-  (VP Accessories: Accessories, Socks, Socks & Hosiery, Swim), `carol` (CEO, all
-  categories).
+  brands in `data/users.yaml` exist in the dataset. Run it again after promoting a Trio.
+- Demo users: `alice` (VP Denim and Workwear: Levi's, Carhartt, Dockers, Wrangler), `bob`
+  (VP Outdoor and Swim: Columbia, Volcom, Quiksilver, Speedo), `carol` (CEO, all brands).
 - `ria chat --thread <id>` resumes an earlier conversation; the thread id is printed when a
   chat starts.
+
+## Chat commands
+
+Commands are recognised in code before any model call, so they work even when the language
+model is down. Type `/help` in a chat to see the list.
+
+| Command | What it does |
+|---|---|
+| `/reports` | List your saved reports |
+| `/report <id>` | Show one saved report |
+| `/delete <filter>` | Delete reports ("from this conversation", "all", or "mentioning <subject>"); you confirm first |
+| `/schema` | Show the tables and columns the agent can query |
+| `/good [note]` | Rate the last answer as good |
+| `/bad [note]` | Rate the last answer as bad |
+| `/help` | Show the command list |
+
+Anything else is treated as a question.
 
 ## Demo script
 
@@ -57,15 +75,17 @@ Start `uv run ria chat --user alice` and type these in order:
 
 1. `What data do we have and what can I ask about?`
    Schema answer from the cached schema; no BigQuery query.
-2. `Compare revenue of Jeans and Pants over the last 12 months.`
-   Analysis. The SQL is filtered to Alice's categories by the guard.
+2. `Compare revenue of Levi's and Carhartt over the last 12 months`
+   Analysis. The SQL is filtered to Alice's brands by the guard.
 3. `Why is the gap so large?`
    Follow-up that uses the conversation so far.
-4. `Save this as a report.`
+4. `How did Calvin Klein sell last month?`
+   Calvin Klein is not one of Alice's brands, so the answer is the scoped no-data message.
+5. `Save this as a report.`
    Saves the last analysis and queues it as a Golden Trio candidate.
-5. `Use tables from now on.`
+6. `Use tables from now on.`
    Stores a preference; later analyses append the result rows as a table.
-6. `Delete the reports from this conversation.`
+7. `Delete the reports from this conversation.`
    Lists the matching reports and asks for confirmation. Type `yes` to delete. Anything
    else cancels.
 
@@ -94,11 +114,11 @@ Only promoted Trios are retrieved as examples for SQL generation.
 ## Evaluation
 
 ```bash
-uv run ria eval                  # all 20 cases in evals/questions.yaml, live services
+uv run ria eval                  # all 24 cases in evals/questions.yaml, live services
 uv run ria eval --only pii-request
 ```
 
-Each case gets deterministic checks (intent, outcome, repairs, tables in the SQL, category
+Each case gets deterministic checks (intent, outcome, repairs, tables in the SQL, brand
 scope, no PII patterns in the answer) and an LLM judge score from 1 to 5. Results are
 written to `evals/results-<timestamp>.json`. The command exits with 1 if any deterministic
 check fails.
@@ -106,10 +126,11 @@ check fails.
 The run makes roughly 100 model calls on one key, so on the free tier expect 429 fallbacks
 and primary-down windows. Use `--only <case>` to run cases one at a time.
 
-## Changing the persona
+## Changing the persona and the definitions
 
 Edit `data/persona.md` while a chat is running. The file is read on every turn, so the next
-answer uses the new tone and instructions. No restart is needed.
+answer uses the new tone and instructions. No restart is needed. `data/definitions.md`
+sits next to it and is edited the same way.
 
 ## Tests
 
@@ -117,7 +138,7 @@ answer uses the new tone and instructions. No restart is needed.
 uv run pytest
 ```
 
-146 tests, no network or credentials needed. Model, embedding and MCP calls are replaced by
+204 tests, no network or credentials needed. Model, embedding and MCP calls are replaced by
 scripted fakes.
 
 ## Free-tier note
@@ -145,12 +166,12 @@ questions per minute is the practical rate on the free tier.
 data/
   golden_trios/*.yaml   15 seed Trios (question, SQL, analyst report, tags)
   persona.md            tone and instructions, read every turn
-  users.yaml            demo users and their categories
+  users.yaml            demo users and their brands
 docs/
   hld.md                production architecture and diagrams
   technical-design.md   per-requirement design and error matrix
 evals/
-  questions.yaml        20 evaluation cases
+  questions.yaml        24 evaluation cases
 src/ria/
   cli.py                Typer commands: init, doctor, chat, trace, stats, golden, eval
   bootstrap.py          init logic and the chat loop, testable without a terminal
@@ -179,7 +200,7 @@ tests/                  pytest suite, offline
 | Observability | Per-turn traces, `ria trace`, `ria stats`, optional LangSmith | Cloud Logging and Trace, alerts |
 | Golden Bucket | Seed Trios, sqlite-vec retrieval, candidate promotion commands | GCS bucket, Vertex AI Vector Search, weekly review job |
 | Learning | Regex preference memory, Trio candidates from saved reports | Eval growth from traced failures, prompt-regression runs |
-| Evaluation | 20-case eval with deterministic checks and an LLM judge | CI gate, thumbs ratings, executive review sessions |
+| Evaluation | 24-case eval with deterministic checks and an LLM judge | CI gate, thumbs ratings, executive review sessions |
 | Persona | `data/persona.md` hot reload | Versioned GCS object with an admin page and rollback |
 | Not built | | Web UI, real identity, charts, email delivery, web search |
 

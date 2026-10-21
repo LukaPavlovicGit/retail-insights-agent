@@ -87,7 +87,7 @@ async def chat_loop(app, user: dict, thread_id: str, prompt_fn, print_fn, run_tu
     as "no". Exceptions from a turn are printed and the loop continues, so one bad turn never ends the session.
     """
     status_fn = status_fn or print_fn
-    print_fn(f"Chatting as {user['name']} ({user['role']}). Thread {thread_id}. Ctrl-D to exit.")
+    print_fn(f"Chatting as {user['name']} ({user['role']}). Thread {thread_id}. Ctrl-D to exit. Type /help for commands.")
     while True:
         try:
             text = await prompt_fn("you> ")

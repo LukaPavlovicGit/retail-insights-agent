@@ -108,6 +108,18 @@ async def test_chat_loop_survives_interrupt_during_turn():
 
     await chat_loop(object(), {"id": "a", "name": "A", "role": "r", "scope": None}, "th", prompt_fn, outputs.append, run_turn_fn=run_turn_fn)
     assert "Turn cancelled." in outputs and "Fine." in outputs
+    assert "/help" in outputs[0]
+
+
+def test_stats_shows_rating_and_correction_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("RIA_DB_PATH", str(tmp_path / "ria.db"))
+    monkeypatch.setenv("RIA_DATA_DIR", str(tmp_path))
+    conn = db.connect(tmp_path / "ria.db")
+    db.init_schema(conn, 768)
+    TraceStore(conn).save(TurnTrace("r1", "t", "alice", "analysis", "ok", "2026-10-16T00:00:00+00:00", 120, rating=1, corrected=True))
+    conn.close()
+    out = CliRunner().invoke(cli, ["stats"]).output
+    assert "rated good/bad" in out and "1/0" in out and "correction_rate" in out and "100%" in out
 
 
 def test_trace_stats_and_golden_commands(tmp_path, monkeypatch):

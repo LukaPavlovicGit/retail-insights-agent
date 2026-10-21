@@ -16,8 +16,15 @@ def trace(intent="analysis", outcome="ok", sql="SELECT 1 FROM `x.y.order_items` 
 
 def test_load_cases():
     cases = load_cases(CASES)
-    assert len(cases) == 22 and cases[0].id == "schema-overview" and cases[1].tables == ["order_items", "users"]
+    assert len(cases) == 24 and cases[0].id == "schema-overview" and cases[1].tables == ["order_items", "users"]
     assert cases[1].max_repairs == 1 and cases[8].max_repairs == 2
+
+
+def test_command_cases_pass_with_no_sql():
+    cases = {c.id: c for c in load_cases(CASES)}
+    for cid, intent, outcome in (("command-reports", "report_list", "listed"), ("command-help", "help", "help")):
+        t = TurnTrace("t", "th", "bob", intent, outcome, "2026-10-16T00:00:00+00:00", 1)
+        assert check_case(cases[cid], t, "ok", ["Columbia"]) == []
 
 
 def test_check_case_passes():
