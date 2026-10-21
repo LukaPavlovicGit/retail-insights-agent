@@ -65,7 +65,7 @@ class Deps:
         return cls(
             settings=settings, llm=llm, embedder=embedder or FakeEmbedder(settings.embedding_dim), toolbox=toolbox,
             conn=conn, trio_store=TrioStore(conn), prefs_store=PrefsStore(conn), trace_store=TraceStore(conn),
-            schema=schema, schema_text=schema_digest(schema, settings.dataset),
+            schema=schema, schema_text=schema_digest(schema, settings.dataset, settings.scope_column),
         )
 
     @classmethod
@@ -79,5 +79,5 @@ class Deps:
             settings=settings, llm=GeminiClient(settings), embedder=GeminiEmbedder(settings), toolbox=toolbox,
             conn=conn, trio_store=TrioStore(conn), prefs_store=PrefsStore(conn),
             trace_store=TraceStore(conn, jsonl_path=settings.db_path.parent / "traces.jsonl"),
-            schema=schema, schema_text=schema_digest(schema, settings.dataset),
+            schema=schema, schema_text=schema_digest(schema, settings.dataset, settings.scope_column),
         )

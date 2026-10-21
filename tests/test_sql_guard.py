@@ -75,10 +75,39 @@ def test_scope_injected_when_products_present():
     assert "`p`.`brand` IN ('Levi\\'s', 'Carhartt')" in r.sql
 
 
-def test_scope_adds_join_when_only_order_items():
+def test_scope_semijoin_when_only_order_items():
     r = g(f"SELECT COUNT(*) AS n FROM {OI} oi")
-    assert r.ok and "scope:join_added" in r.events and "scope:injected" in r.events
-    assert "products" in r.sql and "IN ('Levi\\'s', 'Carhartt')" in r.sql
+    assert r.ok and r.events.count("scope:semijoin") == 1 and "scope:injected" not in r.events
+    assert "`oi`.`product_id` IN (SELECT" in r.sql and "SELECT p.id FROM" in r.sql and "IN ('Levi\\'s', 'Carhartt')" in r.sql
+    assert "JOIN" not in r.sql
+
+
+SELF_JOINS = {
+    "products": (f"SELECT p1.brand, p1.name FROM {P} p1 JOIN {P} p2 ON p1.category = p2.category", ["`p1`.`brand` IN", "`p2`.`brand` IN"]),
+    "products_left": (f"SELECT p1.brand, p1.name FROM {P} p1 LEFT JOIN {P} p2 ON p2.id = -1", ["`p1`.`brand` IN", "`p2`.`brand` IN"]),
+    "order_items": (
+        f"SELECT oi1.product_id, oi1.sale_price FROM {OI} oi1 JOIN {OI} oi2 ON oi1.order_id = oi2.order_id",
+        ["`oi1`.`product_id` IN (SELECT", "`oi2`.`product_id` IN (SELECT"],
+    ),
+    "order_items_with_products": (
+        f"SELECT oi1.product_id, oi1.sale_price FROM {OI} oi1 JOIN {OI} oi2 ON oi1.order_id = oi2.order_id JOIN {P} p ON p.id = oi2.product_id",
+        ["`oi1`.`product_id` IN (SELECT", "`oi2`.`product_id` IN (SELECT", "`p`.`brand` IN"],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SELF_JOINS)
+def test_scope_constrains_every_alias_in_self_joins(name):
+    sql, expected = SELF_JOINS[name]
+    r = g(sql)
+    assert r.ok
+    for fragment in expected:
+        assert fragment in r.sql, fragment
+
+
+def test_scope_events_per_alias():
+    r = g(SELF_JOINS["order_items_with_products"][0])
+    assert r.events.count("scope:semijoin") == 2 and r.events.count("scope:injected") == 1
 
 
 def test_scope_semijoin_for_users_only():
@@ -264,3 +293,45 @@ def test_demographics_allows_filter_with_counted_ids():
 def test_demographics_multi_column_group_by_adds_one_having():
     r = g(f"SELECT u.state, u.gender, COUNT(*) AS n {JOINS} GROUP BY u.state, u.gender", scope=None)
     assert r.ok and r.sql.count("HAVING") == 1 and r.events.count("demographics:min_group") == 1
+
+
+UNGROUPED = {
+    "cte": f"WITH c AS (SELECT u.state, u.age FROM {U} u) SELECT c.state, c.age, COUNT(*) AS n FROM c GROUP BY 1, 2",
+    "derived": f"SELECT c.state, c.age, COUNT(*) AS n FROM (SELECT u.state, u.age FROM {U} u) c GROUP BY 1, 2",
+    "distinct_window": f"SELECT DISTINCT u.state, u.age, COUNT(*) OVER (PARTITION BY u.state, u.age) AS n FROM {U} u",
+    "bare_no_group": f"SELECT u.age, u.gender, u.city, u.state, u.traffic_source FROM {U} u",
+}
+
+
+@pytest.mark.parametrize("name", UNGROUPED)
+def test_demographics_rejects_ungrouped_bare_columns(name):
+    r = g(UNGROUPED[name], scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "grouped in the same SELECT" in r.reason
+
+
+def test_demographics_rejects_group_by_all():
+    r = g(f"SELECT u.state, u.age, COUNT(*) AS n FROM {U} u GROUP BY ALL", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "GROUP BY ALL" in r.reason
+
+
+def test_demographics_rejects_orders_gender_next_to_id():
+    r = g(f"SELECT o.user_id, o.gender FROM {O} o", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events and "aggregates" in r.reason
+
+
+def test_demographics_orders_gender_grouped_gets_having_on_orders_user_id():
+    r = g(f"SELECT o.gender, COUNT(DISTINCT o.user_id) AS n FROM {O} o GROUP BY o.gender", scope=None)
+    assert r.ok and "HAVING COUNT(DISTINCT `o`.`user_id`) >= 10" in r.sql
+
+
+@pytest.mark.parametrize("select", ["o.order_id", "oi.id", "oi.inventory_item_id", "oi.order_id"])
+def test_demographics_rejects_order_and_item_ids(select):
+    r = g(f"SELECT {select}, u.state, u.age FROM {O} o JOIN {U} u ON u.id = o.user_id JOIN {OI} oi ON oi.order_id = o.order_id", scope=None)
+    assert not r.ok and "demographics:rejected" in r.events
+
+
+def test_schema_digest_mentions_scope_column():
+    assert "brand drives scoping" in schema_digest()
+    text = schema_digest(scope_column="category")
+    assert "category drives scoping" in text and "category and department drive scoping" not in text
+    assert "created_at)" not in text.split("one row per customer")[1].split("\n")[0]

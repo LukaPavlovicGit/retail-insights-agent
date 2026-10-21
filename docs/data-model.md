@@ -113,12 +113,15 @@ erDiagram
 | `products` | catalog product | `brand` is the scope key (`Settings.scope_column`, env `RIA_SCOPE_COLUMN`): a scoped user's brands are injected as `products.brand IN (...)`. `cost` vs `retail_price` gives margin. `department` is Men or Women. |
 
 **Demographics rules** (SQL guard, every user including the CEO). The demographic columns
-are `users.state`, `city`, `country`, `age`, `gender` and `traffic_source`. A query that
-returns a customer id (`users.id`, `order_items.user_id`, `orders.user_id`) in any select
+are `users.state`, `city`, `country`, `age`, `gender` and `traffic_source`, plus
+`orders.gender` (copied from the user). A query that returns a customer, order or item
+identifier (`users.id`, `order_items.user_id`, `orders.user_id`, `orders.order_id`,
+`order_items.order_id`, `order_items.id`, `order_items.inventory_item_id`) in any select
 list, outside `COUNT` or `APPROX_COUNT_DISTINCT`, and references a demographic column
-anywhere in the query is rejected. A SELECT that groups by a demographic column gets
-`HAVING COUNT(DISTINCT <customer id>) >= 10` (`Settings.min_group_size`), so no group of fewer
-than 10 customers is shown.
+anywhere in the query is rejected. A demographic column may appear bare in a select list
+only in a SELECT that groups by it and reads a customer table (`GROUP BY ALL` is rejected).
+That SELECT gets `HAVING COUNT(DISTINCT <customer id>) >= 10` (`Settings.min_group_size`), so
+no group of fewer than 10 customers is shown.
 
 ### Relationships the agent relies on
 
@@ -132,9 +135,10 @@ than 10 customers is shown.
 The schema digest the model sees lists the first three as join keys. For a scoped user the
 guard filters every SELECT that reads a dataset table to the user's brands:
 
-- `products` in the SELECT: `products.brand IN (...)`.
-- `order_items` without `products`: the guard adds
-  `INNER JOIN products AS ria_p ON ria_p.id = oi.product_id` and the brand predicate.
+- `products` in the SELECT: `<alias>.brand IN (...)` on every products alias (self-joins included).
+- `order_items` in the SELECT: on every order_items alias,
+  `<alias>.product_id IN (SELECT p.id FROM products AS p WHERE p.brand IN (...))`. No join is
+  added, so the grain does not change.
 - Only `orders` and/or `users`: a semi-join, `orders.order_id IN (...)` or `users.id IN (...)`
   over `order_items` joined to `products` and filtered to the user's brands. The outer
   query keeps its grain, so "signups per month" counts customers who bought one of the
@@ -276,7 +280,7 @@ Identifiers that tie the store together: `user_id` (who), `thread_id` (which con
 to the current `turn_id` when the turn's outcome is an answer (`ok`, `no_data`, `gave_up`,
 `refused`, `error`, `saved`, `deleted`, `cancelled`) and the turn is not itself a rating.
 `/good`, `/bad` and a router-detected correction update the `traces` row with that id.
-`/reports`, `/report <id>` and `/help` do not change it.
+`/reports`, `/report <id>`, `/schema` and `/help` do not change it.
 
 ## 3. Production mapping
 
