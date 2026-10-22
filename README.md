@@ -11,12 +11,14 @@ sqlite-vec.
 ## Architecture
 
 - [docs/assignment.md](docs/assignment.md): the assignment brief this project answers.
-- [docs/data-model.md](docs/data-model.md): the warehouse tables and their relationships, the agent's own store, and how each table is used.
 - [docs/hld.md](docs/hld.md): production architecture on Google Cloud, the flow of one
   analysis turn, the delete confirmation flow, component choices, and non-functional notes.
 - [docs/technical-design.md](docs/technical-design.md): one section per assignment
   requirement with the module and test that implement it, the error handling matrix, and
   the client's answers with what each one changed.
+- [docs/data-model.md](docs/data-model.md): the warehouse tables and their relationships, the agent's own store, and how each table is used.
+
+Why LangGraph, and my experience with it: [technical-design.md section 9](docs/technical-design.md#9-why-these-choices)
 
 ## Prerequisites
 
@@ -40,7 +42,7 @@ uv run ria init
 uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
 ```
 
-If you upgrade from an older checkout, delete `ria.db` and run `ria init` again.
+`uv sync` installs the pinned versions from `uv.lock`; there is no requirements.txt.
 
 - `ria doctor` checks the Gemini key, Google credentials, a BigQuery dry run, and one Gemini
   call.
@@ -145,13 +147,12 @@ uv run ria persona check my-persona.md --live     # also runs the 24 eval cases 
 uv run ria persona publish my-persona.md [--live] # same checks, then replaces data/persona.md
 ```
 
-The lint rejects an empty persona, more than 4000 characters, and any line that tries to
-override instructions, touches scope, brands, email, SQL, SELECT, delete, PII, the minimum
-group size, the output language (English only), or redefines churn or revenue; naming a
-metric ("round revenue to the nearest thousand") is fine. A report header may not name a
-brand, because the persona is shared by every user and scope is per user. `--live` requires zero deterministic eval failures and a judge mean of at least 4.0.
-Publish saves the current persona to `data/persona_versions/<UTC timestamp>.md` first, so
-rolling back is publishing a saved version. There is no manual approval step.
+The checks are an offline lint and, with `--live`, the eval set (zero deterministic failures,
+judge mean at least 4.0). Publish saves the current persona to
+`data/persona_versions/<UTC timestamp>.md` first, so rolling back is publishing a saved
+version. There is no manual approval step. The lint rules are in
+[technical-design.md section 6](docs/technical-design.md#6-quality-assurance), and what a
+persona may not change is in [section 8](docs/technical-design.md#8-persona-management).
 
 ## Tests
 
@@ -181,7 +182,7 @@ OpsFleet answered the clarification questions after the first version. Details a
 | Question | Answer | What it changed |
 |---|---|---|
 | Which products does a manager see? | Their brands; the CEO sees all | Scope key is `products.brand`; demo users own brands |
-| Customer-level questions for a manager? | Answerable, filtered to their data | Users-only and orders-only queries are scoped by a semi-join instead of refused |
+| Customer-level questions for a manager? | Answerable, filtered to their data | Users-only and orders-only queries are scoped by a semi-join |
 | Churn definition? | No purchase in 90 days, overridable | `data/org_defaults.yaml`, read every turn; answers state the definition used |
 | Revenue definition? | Complete, Shipped, Processing | Same file |
 | Demographics? | Aggregates only, never per person | Guard rejects ids next to demographics; groups need at least 10 customers |
@@ -210,8 +211,10 @@ data/
   org_defaults.yaml     churn window, revenue statuses, minimum group size
   users.yaml            demo users and their brands
 docs/
+  assignment.md         the assignment brief
   hld.md                production architecture and diagrams
   technical-design.md   per-requirement design and error matrix
+  data-model.md         warehouse tables and the agent's own store
 evals/
   questions.yaml        24 evaluation cases
 src/ria/
@@ -251,4 +254,7 @@ tests/                  pytest suite, offline
 
 ## Example run
 
-Transcript to be captured after `ria init` on a machine with credentials; see the demo script above.
+The demo script above produces, in order: a schema answer with no query; a scoped analysis
+with the trace line; a follow-up that uses the conversation; a scoped no-data message that
+names Alice's brands; a saved report and a Trio candidate; a stored table preference; and a
+delete with confirmation. A full transcript is added here after the live run.
