@@ -11,8 +11,8 @@ Requirements 2, 3, 5 and 7 are fully implemented in the prototype. Requirements 
 All paths below are relative to `src/ria/` unless they start with `tests/`, `data/` or
 `evals/`. The test suite has 259 tests and runs offline (`uv run pytest`).
 
-OpsFleet answered the clarification questions after the first version. Section 13 lists the
-answers, what each one changed, and the items still open.
+Section 13 lists OpsFleet's answers to the clarification questions, what each one
+determines in the design, and the items still open.
 
 ## Contents
 
@@ -126,7 +126,8 @@ personal columns from the schema text in every prompt and states that they do no
 `postal_code`, `latitude`, `longitude`. Demographic columns (`DEMOGRAPHIC_COLUMNS` in
 `guards/schema.py`: `state`, `city`, `country`, `age`, `gender`, `traffic_source`, and
 `orders.gender` through `DEMOGRAPHIC_FIELDS`) may be queried, but only in aggregates
-(step 5). `created_at` is not a demographic column.
+(step 5). `created_at` is not a demographic column. Every column and the table
+relationships are in [data-model.md](data-model.md).
 
 **Scope key.** The scope is a column on `products`, set by `Settings.scope_column` (default
 `brand`, env `RIA_SCOPE_COLUMN`). Each user's values come from the `brands` key in
@@ -185,7 +186,7 @@ as `pii:ok` or `demographics:rejected` to the turn's `guard_events`.
      Otherwise, with `users`: `<users alias>.id IN (SELECT oi.user_id FROM ... WHERE p.brand IN (...))`.
      Event `scope:semijoin`, once per orders (or users) alias. The grain of the outer query is kept (no row multiplication),
      so "signups per month" for a scoped user counts customers who bought one of their
-     brands. Before the client answers this case was rejected; it is now answered.
+     brands.
    - No dataset tables (the SELECT reads only a CTE or subquery): skip; the inner SELECT is
      filtered instead.
    Every SELECT that reads a dataset table is filtered on its own, so an outer query over
@@ -210,7 +211,7 @@ the trace.
 
 **Tests.** `tests/test_sql_guard.py` (65 collected tests), including
 `test_rejects_pii_aliased`, `test_rejects_pii_star_on_users`, `test_rejects_pii_inside_cte`,
-`test_rejects_whole_row_users_reference`, `test_scope_adds_join_when_only_order_items`,
+`test_rejects_whole_row_users_reference`, `test_scope_semijoin_when_only_order_items`,
 `test_scope_semijoin_for_users_only`, `test_scope_semijoin_for_orders_only_keeps_existing_where`,
 `test_scope_orders_with_products_only_in_subquery_gets_semijoin_and_inner_predicate`,
 `test_scope_column_setting`, `test_scope_injected_inside_cte`,
@@ -424,7 +425,7 @@ The production items below use them.
   | BigQuery timeout and byte cap | 60 s, 1 GB | A question from an executive over this dataset should not scan more; the cap bounds the cost of any single query |
   | Circuit breaker | 3 consecutive failures open it for 5 minutes | Protects the quota during a warehouse incident instead of failing every turn one by one; resets by itself, no operator action |
   | Model calls per turn | 8 | An analysis turn needs 3 to 5 (two repairs make 5) and a history summary makes 6; 8 leaves room without letting a loop run away |
-  | Ops alert (design) | 3 or more consecutive outage turns within 5 minutes, or a fallback rate over 15 minutes above 50 percent | Pages the on-call; the user already sees the model-unavailable or data-source-down message plus the slash commands that keep working (HLD section 9) |
+  | Ops alert (design) | Thresholds in [HLD section 9](hld.md#9-non-functional) | Pages the on-call; the user already sees the model-unavailable or data-source-down message plus the slash commands that keep working |
 - **Outage scenarios.**
 
   | Down | Analysis and free-text questions | Commands |
@@ -434,7 +435,9 @@ The production items below use them.
   | Warehouse and both models | Same as models down | All work; none of them queries BigQuery (`/schema` uses the schema cached at `ria init`) |
 
   Saving by free text ("save this as a report") needs the router, so with both models down
-  it fails like any other free-text turn. There is no `/save` command.
+  it fails like any other free-text turn. There is no `/save` command. Questions are not
+  queued during an outage; the user gets a clear message and the commands that still work
+  (best effort, as agreed with OpsFleet).
 - **CLI.** `chat_loop` catches every exception from a turn, prints a short message and keeps
   the session. Ctrl-C during a turn cancels that turn only. `ria chat` exits early with a
   clear message if `GEMINI_API_KEY` is unset; `ria doctor` checks the key, Google
@@ -464,11 +467,8 @@ The production items below use them.
 `tests/test_cli.py`: `test_chat_loop_survives_interrupt_during_turn`.
 
 **Production.** Vertex AI provisioned throughput for the primary model, so 429s become rare
-under normal load. A second Vertex region as failover for the model. No request queue:
-OpsFleet asked for best-effort behaviour when quota runs out (section 13, answer 9c-ii), so a
-turn that cannot get a model answers with the model-unavailable message and the slash
-commands keep working. The circuit breaker state moves to Memorystore so all instances
-share it.
+under normal load. A second Vertex region as failover for the model. The circuit breaker
+state moves to Memorystore so all instances share it.
 
 ## 6. Quality assurance
 
@@ -566,7 +566,7 @@ for prompt, guard and Trio changes it is computed but not yet enforced in code.
   flag), `sql_attempts` (sql, error, kind, row_count, bytes), `guard_events`, and `error`.
   `rating`, `rating_note` and `corrected` are written later, by `TraceStore.set_rating` and
   `TraceStore.set_corrected`, when the user rates or corrects that answer on a later turn.
-  Each model call also gets a row in `llm_ledger`. In `ria chat`, every trace is also
+  Each model call also gets a row in `llm_ledger`. In `ria chat` and `ria eval`, every trace is also
   appended to `traces.jsonl` next to the database.
 - **Always written.** `write_trace` (`graph/lifecycle.py`) is the last node on every path,
   including refusals, give-ups, model outages and confirmed or cancelled deletes. The CLI
@@ -600,7 +600,7 @@ for prompt, guard and Trio changes it is computed but not yet enforced in code.
   or a probing user.
 - Deep dive path: an alert or a user complaint gives a `turn_id`; the trace shows the nodes,
   SQL attempts and guard events; the LangSmith run for the same turn shows full prompts and
-  outputs; the BigQuery job id (to be added to the attempt record) opens the job in the
+  outputs; the BigQuery job id (the attempt record would carry it) opens the job in the
   console with bytes and slot time.
 
 ## 8. Persona management
@@ -625,7 +625,7 @@ to change it. Lower rows never override higher ones.
 | Persona (`data/persona.md`) | Business or analytics lead | Edit a copy, `ria persona check`, `ria persona publish` | Lint, plus the eval set with `--live` | Tone and voice, emphasis, default answer format and depth wording, a disclaimer line, a report header |
 | User preferences | The user | Say it in chat ("use tables", "shorter") | None; presentation only | Format, depth, charts |
 
-Org defaults are business truth and apply to everyone. User preferences change how an
+Org defaults apply to everyone. User preferences change how an
 answer is presented, never a definition; the analysis prompt says so. An inline request in a
 question ("use a 60-day window") overrides a definition for that answer only, and the answer
 says so.
@@ -746,38 +746,28 @@ Any node that raises LLMUnavailable, BudgetExceeded or OrgDefaultsInvalid routes
 
 ## 12. Setup and example run
 
-```bash
-git clone https://github.com/LukaPavlovicGit/retail-insights-agent
-cd retail-insights-agent
-uv sync
-cp .env.example .env            # fill GEMINI_API_KEY and GOOGLE_CLOUD_PROJECT
-gcloud auth application-default login
-uv run ria doctor
-uv run ria init
-uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
-```
-
-The README has the demo script and the other commands.
+Setup steps are in the [README Setup section](../README.md#setup). The README also has the
+demo script and the other commands.
 
 ### Example run
 
-Transcript to be captured after `ria init` on a machine with credentials; see the demo script in the README.
+See the [README Example run](../README.md#example-run) for what the demo script produces.
+A full transcript is added there after the live run.
 
 ## 13. Client answers and open items
 
-The first version was built on assumptions (scope by product category, a scoped user's
-customer-only questions refused, no rule on demographics). OpsFleet then answered the
-clarification questions. The numbers are OpsFleet's question numbers.
+OpsFleet answered the clarification questions in two rounds. The numbers are OpsFleet's
+question numbers, and each row says what the answer determines in the design.
 
-| # | Answer | What it changed |
+| # | Answer | What it determined |
 |---|---|---|
-| 1a | Access is by brand. The CEO sees everything. The mapping of managers to brands is ours to define. | Scope key is `products.brand` (`Settings.scope_column`). Demo users own brands in `data/users.yaml` (key `brands`); the CEO has `*`. `ria init` warns about brands not in the dataset. Seed Trio 11 is tagged `all`. |
-| 1d | Questions outside a manager's brands are out of scope. Customer-level questions (for example signups per month) are answerable, filtered to the manager's data. The CEO is unrestricted. | Orders-only and users-only SELECTs are no longer rejected for scoped users; the guard adds a semi-join through order_items and products (section 2, step 6). |
+| 1a | Access is by brand. The CEO sees everything. The mapping of managers to brands is ours to define. | Scope key is `products.brand` (`Settings.scope_column`). Demo users own brands in `data/users.yaml` (key `brands`); the CEO has `*`. `ria init` warns about brands not in the dataset. All 15 seed Trios are tagged `all`. |
+| 1d | Questions outside a manager's brands are out of scope. Customer-level questions (for example signups per month) are answerable, filtered to the manager's data. The CEO is unrestricted. | For scoped users, orders-only and users-only SELECTs get a semi-join through order_items and products (section 2, step 6). |
 | 2 | No company-wide churn definition. Default: no purchase in 90 days. State the definition used and let users override it. | `churn_window_days` in `data/org_defaults.yaml`, rendered every turn into the SQL, repair and analysis prompts; answers state the definition; an inline override is used for that answer. Seed Trio 05 uses 90 days. |
 | 3 | Revenue is Complete, Shipped and Processing; Cancelled and Returned are excluded; it should be configurable. | `revenue_statuses` in the same file. |
 | 4 | Hard delete, no recovery window; the confirmation is the safeguard. | No change. |
 | 5 | Reports are not shared; only the author views, changes or deletes them. | No change. `/report <id>` also returns only the author's own reports. There is no edit feature. |
-| 6 | Demographics only in aggregates, never per individual; define a minimum group size. | Guard Rules A and B with a minimum of 10 customers per group, for every user including the CEO (section 2, step 5). Seed Trio 01 no longer returns demographics. |
+| 6 | Demographics only in aggregates, never per individual; define a minimum group size. | Guard Rules A and B with a minimum of 10 customers per group, for every user including the CEO (section 2, step 5). Seed Trio 01 returns no demographics. |
 | 8a to 8e | All five learning signals are wanted. | `/good` and `/bad` ratings and router-detected corrections, stored on the previous answer's trace and shown in `ria trace` and `ria stats` (section 4). |
 | 9 | Timings, alerting and degraded mode are ours to design. | Slash commands handled in code before the router, so reports, schema, ratings and help work with both models down (section 5). |
 
@@ -786,15 +776,15 @@ first round, plus three questions about configuration.
 
 | # | Answer | What it changed |
 |---|---|---|
-| 1b | Brand is the only access dimension; distribution centres do not matter. | Nothing: scope was already by brand. The out-of-scope tables stay out. |
-| 1c | Responsibilities are static; read them from the users file set up for 1a. | Nothing: `data/users.yaml` is read at `ria init`. No brand changes at run time. |
+| 1b | Brand is the only access dimension; distribution centres do not matter. | No change. Scope is by brand, and the out-of-scope tables stay out. |
+| 1c | Responsibilities are static; read them from the users file set up for 1a. | No change. `data/users.yaml` is read at `ria init`; brands do not change at run time. |
 | 7 | English only. | Output language is out of the persona's scope; the lint rejects a persona that changes it (section 6). |
 | 9 | Timings, thresholds and alerting are ours to pick and justify. | Numbers unchanged; each one is justified in section 5. |
 | 9a-i | Whether to disclose a fallback-model answer is our call. | Disclosed: "Note: answered with the backup model." after the answer (section 5). |
-| 9b | A degraded mode when the warehouse is down is wanted. | Already built: the breaker ends the turn with a clear message and schema questions, reports and commands keep working. |
-| 9c-i | Users and the ops team both need to know when the agent is fully down. | The user message existed; `ria stats` gains `outage_turns` (section 7); the HLD defines the ops alert. |
-| 9c-ii | No queueing; best-effort is a reasonable direction. | The production queue is dropped from the design (section 5); the agent stays best-effort. |
-| Global preferences | Org-wide defaults (churn window, revenue statuses, minimum cohort size) owned by a data or admin team; a config file is fine, no UI; explain how user preferences layer on top. | One structured file `data/org_defaults.yaml` feeds both the guard and the prompts; `Settings.min_group_size` and `RIA_MIN_GROUP_SIZE` were removed; the layering is in section 8. |
+| 9b | A degraded mode when the warehouse is down is wanted. | The breaker ends the turn with a clear message; schema questions, reports and commands keep working (section 5). |
+| 9c-i | Users and the ops team both need to know when the agent is fully down. | The user sees a clear message; `ria stats` shows `outage_turns` (section 5); the HLD defines the ops alert. |
+| 9c-ii | No queueing; best-effort is a reasonable direction. | Questions are not queued; the agent stays best-effort (section 5). |
+| Global preferences | Org-wide defaults (churn window, revenue statuses, minimum cohort size) owned by a data or admin team; a config file is fine, no UI; explain how user preferences layer on top. | One structured file `data/org_defaults.yaml` feeds both the guard and the prompts; the layering is in section 8. |
 | QA and persona | Persona changes must pass an automated quality gate before going live; no manual approval. | `ria persona check` and `ria persona publish` with lint and a live eval gate (section 6). |
 | Persona scope | What else non-developers may configure is ours to define and justify. | The boundary in section 8: tone, emphasis, format wording, disclaimer, report header; not scope, safety, definitions, language or tools. |
 

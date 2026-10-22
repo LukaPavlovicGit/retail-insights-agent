@@ -6,8 +6,8 @@ lives. This page describes both, the relationships between entities, and how the
 each table.
 
 Column names and types below are the ones the SQL guard and the prompts use
-(`src/ria/guards/schema.py`). They match the public dataset as documented by Google and by
-community write-ups; `ria init` fetches the live schema from BigQuery and caches it in
+(`src/ria/guards/schema.py`). They match the public dataset as documented by Google;
+`ria init` fetches the live schema from BigQuery and caches it in
 `data/schema.json`, which takes precedence if the dataset changes.
 
 ## 1. The warehouse: `bigquery-public-data.thelook_ecommerce` (read-only)
@@ -107,7 +107,7 @@ erDiagram
 
 | Table | One row per | Grain and notes |
 |---|---|---|
-| `users` | customer | Demographics (age, gender, state, city, country, traffic_source) may be used only in aggregates; see the demographics rules below. `created_at` is not a demographic column. Seven columns are personal identifiers and are denied at parse time: `email`, `first_name`, `last_name`, `street_address`, `postal_code`, `latitude`, `longitude`. |
+| `users` | customer | Demographics (age, gender, state, city, country, traffic_source) may be used only in aggregates; see the demographics rules below. `created_at` is not a demographic column. Seven columns are personal identifiers and are denied by the SQL guard: `email`, `first_name`, `last_name`, `street_address`, `postal_code`, `latitude`, `longitude`. |
 | `orders` | order | `status` is one of Cancelled, Processing, Shipped, Complete, Returned. `num_of_item` is the item count. `gender` is copied from the user. |
 | `order_items` | item sold | The fact table. `sale_price` is the revenue per item. `status` repeats the order status per item. `user_id` is denormalised from `orders`, so order_items joins to users directly. `inventory_item_id` points at the physical unit (out of scope). |
 | `products` | catalog product | `brand` is the scope key (`Settings.scope_column`, env `RIA_SCOPE_COLUMN`): a scoped user's brands are injected as `products.brand IN (...)`. `cost` vs `retail_price` gives margin. `department` is Men or Women. |
@@ -245,19 +245,22 @@ erDiagram
     INTEGER fallback
   }
   checkpoints {
-    TEXT thread_id PK
+    TEXT thread_id PK "abridged, managed by LangGraph"
     TEXT checkpoint_ns PK
     TEXT checkpoint_id PK
     TEXT parent_checkpoint_id
+    TEXT type
     BLOB checkpoint "serialised AgentState"
     BLOB metadata
   }
   writes {
-    TEXT thread_id PK
+    TEXT thread_id PK "abridged, managed by LangGraph"
+    TEXT checkpoint_ns PK
     TEXT checkpoint_id PK
     TEXT task_id PK
     INTEGER idx PK
     TEXT channel
+    TEXT type
     BLOB value
   }
 ```

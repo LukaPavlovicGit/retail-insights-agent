@@ -139,7 +139,8 @@ Node names in the diagram are the real node names in `src/ria/graph/build.py`. A
 with `finalize -> update_memory -> write_trace` on every graph path, including refusals,
 give-ups, and model outages (`LLMUnavailable`, `BudgetExceeded`), so each of those turns
 produces a trace row. Other exceptions escape the graph and are caught by the CLI loop
-without a trace row; this is a known gap (see section 9 and technical-design section 11).
+without a trace row; this is a known gap (see
+[technical-design.md section 11](technical-design.md#11-error-handling-and-fallback-matrix)).
 
 ## 4. Report deletion with confirmation
 
@@ -191,6 +192,8 @@ that the confirmation is the safeguard and no recovery window is needed.
 
 ## 6. Data stores and what lives where
 
+Column-level detail and the relationships between tables are in [data-model.md](data-model.md).
+
 | Store | Purpose | Key columns or content | Production home |
 |---|---|---|---|
 | LangGraph checkpoint tables | Conversation state per `thread_id`, including a paused delete | Managed by `langgraph-checkpoint-sqlite` | Cloud SQL (Postgres checkpointer) |
@@ -217,24 +220,13 @@ persona cannot change scope.
 | Layer | Owner | How it changes | Gate |
 |---|---|---|---|
 | Code: scope, safety rules, tool access, output language (English only) | Engineering | Pull request | Tests and the eval set |
-| Org defaults: `data/org_defaults.yaml` (churn window, revenue statuses, minimum group size) | Data or admin team | Edit the YAML; read on every turn | Validated on load. An invalid file (bad YAML, unknown key, value out of range) fails the turn with "The org defaults file is invalid: ... Ask the data team to fix data/org_defaults.yaml."; the turn is still traced |
+| Org defaults: `data/org_defaults.yaml` (churn window, revenue statuses, minimum group size) | Data or admin team | Edit the YAML; read on every turn | Validated on load. An invalid file fails the turn with a message that names the problem; the turn is still traced |
 | Persona: `data/persona.md` (tone and voice, emphasis, default format and depth wording, disclaimer line, report header) | Business or analytics lead | Edit a copy, then `ria persona check` and `ria persona publish` | Lint, plus the eval set with `--live` (zero deterministic failures, judge mean at least 4.0). No manual approval step, per OpsFleet |
 | User preferences (format, depth, charts) | The user | Say it in chat | None; presentation only, never a definition |
 
-An inline request in a question ("use a 60-day window") overrides an org default for that
-answer only, and the answer says so.
-
-The persona editing flow: copy `data/persona.md`, change the copy, run
-`ria persona check <copy>` (and `--live` to run the 24 eval cases with it), then
-`ria persona publish <copy> [--live]`. Publish runs the same checks, saves the current
-persona to `data/persona_versions/<UTC timestamp>.md`, writes the copy to `data/persona.md`
-and prints the saved version. The next turn uses the new persona; no restart. Rollback is
-publishing a saved version. The lint rejects an empty or over-long persona and any line
-that tries to override instructions, names brands, scope, email, SQL, SELECT, delete, PII or
-the minimum group size, changes the output language, or redefines churn or revenue;
-naming a metric as a topic is fine, and a report header may not name a brand because the
-persona is shared by every user. Everything the persona may not change lives in code or
-in `org_defaults.yaml`, with its own owner.
+The full table with validation ranges, the persona boundary and the persona lint rules are
+in [technical-design.md section 8](technical-design.md#8-persona-management) and
+[section 6](technical-design.md#6-quality-assurance).
 
 ## 8. Extension points
 
@@ -282,9 +274,7 @@ BigQuery part of any single query.
 **Concurrency.** Cloud Run instances serve several conversations at once because the graph
 keeps no in-process state between turns. The checkpointer and reports move to Postgres for
 concurrent writers. The limiting resource is Gemini quota, which is why production uses
-provisioned throughput. There is no request queue: OpsFleet asked for best-effort behaviour
-when quota runs out, so a turn that cannot get a model ends with the model-unavailable
-message and the slash commands keep working.
+provisioned throughput.
 
 **Failure domains.**
 
@@ -296,25 +286,15 @@ message and the slash commands keep working.
 | BigQuery and both Gemini models | Same as both models down: slash commands work (none of them queries BigQuery; `/schema` uses the schema cached at `ria init`), free text gets the model-unavailable message |
 | Vector store | Production: analysis continues without worked examples (lower SQL quality, still guarded). Prototype: the store is in the local SQLite file, so it fails only with the database |
 | Embedding API | The `retrieve_trios` node catches the exception and the turn continues without examples; a `retrieval:failed:<ExceptionType>` guard event is recorded in the trace |
-| Tool service | Prototype: same as the embedding case. Production: Cloud Run restarts the tool service and the agent retries the tool call once |
+| Tool service | Prototype: the turn ends with "Something went wrong: ..." and writes no trace row (known gap; see [technical-design.md section 11](technical-design.md#11-error-handling-and-fallback-matrix)). Production: the tool service is a Cloud Run service with health checks and the agent retries once |
 
 **Outage visibility.** OpsFleet wants both users and the ops team to know when the agent is
-fully down, and a disclosed fallback.
+fully down, and a disclosed fallback. Users get a clear message and a note after any answer
+from the backup model, and `ria stats` reports `outage_turns` for the ops team. The exact
+messages, the note, what `outage_turns` counts and the degraded mode are in
+[technical-design.md section 5](technical-design.md#5-resilience).
 
-- User-facing status line. A free-text turn with both models down ends with "The language
-  model is unavailable right now (rate limit or outage). Nothing was lost; please retry
-  shortly." A turn with the warehouse breaker open ends with "The data warehouse is not
-  responding right now... Saved reports and the schema overview still work." Both messages
-  leave the slash commands usable, and the CLI prints them as the answer; no banner or
-  separate status channel is needed in the prototype.
-- Fallback disclosure. When any model call in a turn used the backup model and the turn
-  produced an answer, the CLI appends "Note: answered with the backup model." after the
-  answer. The note is shown only; it is not stored in the conversation or in saved reports.
-- Ops metric. `ria stats` shows `outage_turns`: turns whose error starts with
-  `LLMUnavailable` or whose last SQL attempt was `circuit_open`. It does not count the two
-  degraded paths that swallow a model outage without failing the turn (history summary,
-  report title), which are visible as a guard event and a question-shaped title instead.
-- Ops alert (design). Page the on-call when 3 or more consecutive outage turns occur within
-  5 minutes, or when the fallback rate over 15 minutes exceeds 50 percent. In production
-  both come from the trace log sink in BigQuery; in the prototype `ria stats --since` gives
-  the same numbers by hand.
+Ops alert (design). Page the on-call when 3 or more consecutive outage turns occur within
+5 minutes, or when the fallback rate over 15 minutes exceeds 50 percent. In production
+both come from the trace log sink in BigQuery; in the prototype `ria stats --since` gives
+the same numbers by hand.
