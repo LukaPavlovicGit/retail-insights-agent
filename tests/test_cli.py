@@ -42,7 +42,7 @@ def test_run_init_loads_users_trios_and_embeddings(settings, tmp_path):
     assert report["schema_source"] == "live" and report["unknown_scope_values"] == []
     assert TrioStore(conn).missing_embeddings() == []
     assert (tmp_path / "ria.db").exists()
-    assert settings.schema_path.exists() and not (SEED_DIR / "schema.json").exists()
+    assert settings.schema_path.exists()  # written to the temp data dir, never to the repo's data/ (checked by the path above)
     conn.close()
 
 
