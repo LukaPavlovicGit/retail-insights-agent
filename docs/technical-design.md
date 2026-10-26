@@ -662,7 +662,7 @@ moves to the same bucket with the data team as its only writer.
 | Gemini 3.8 Flash, fallback 3.5 Flash-Lite | The assignment prefers Gemini. Flash is cheap enough for 3 to 5 calls per turn and supports structured output for routing and SQL. The fallback uses the same key and SDK. |
 | MCP for tools | The tool boundary is where permissions live: the graph never imports the BigQuery client. Adding a capability is adding a tool. A reviewer can read the seven tool signatures to see everything the agent can do to the outside world. |
 | sqlite-vec | A real KNN index with no server, in the same file as everything else. pgvector would need a Postgres install for the prototype. Vertex AI Vector Search is the production choice; it needs a deployed index endpoint, which is too much setup for a reviewer's laptop. |
-| SQLite | One file, no install, and LangGraph ships a SQLite checkpointer. The schema maps directly to Postgres for production. |
+| SQLite | No install, and LangGraph ships a SQLite checkpointer. The app store (`ria.db`) and the checkpointer (`ria-checkpoints.db`) are separate files because a shared one deadlocks (see `docs/data-model.md`). The schema maps directly to Postgres for production. |
 
 **Author's experience.** This is my first LangGraph project. I have built the same kind of
 orchestration before without a framework: a master agent handing off to sub-agents, per-call

@@ -49,6 +49,7 @@ uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
 - `ria init` loads the demo users and the 15 seed Golden Trios into `ria.db`, embeds the
   Trio questions, caches the live BigQuery schema in `data/schema.json`, and checks that the
   brands in `data/users.yaml` exist in the dataset. Run it again after promoting a Trio.
+  Conversation state (LangGraph checkpoints) lives in a second file, `ria-checkpoints.db`.
 - Demo users: `alice` (VP Denim and Workwear: Levi's, Carhartt, Dockers, Wrangler), `bob`
   (VP Outdoor and Swim: Columbia, Volcom, Quiksilver, Speedo), `carol` (CEO, all brands).
 - `ria chat --thread <id>` resumes an earlier conversation; the thread id is printed when a

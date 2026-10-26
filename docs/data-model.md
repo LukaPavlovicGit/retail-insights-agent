@@ -273,7 +273,7 @@ erDiagram
 | `trios` | `ria init` (seeds), `save_report` (pending candidates), `ria golden promote/reject` | `retrieve_trios` | Only `status = promoted` is retrievable. |
 | `trio_vec` | `ria init` for any Trio without a vector | `TrioStore.search` (KNN, cosine) | sqlite-vec `vec0` virtual table; `trio_id` matches `trios.id`. |
 | `traces`, `llm_ledger` | `write_trace` at the end of every graph turn; `rating` and `rating_note` by the `rating` node (`/good`, `/bad`); `corrected` by the router when it flags a correction | `ria trace`, `ria stats`, `ria eval` | One trace per turn; one ledger row per model call. A rating or correction updates the trace of the previous answer, not the current turn. |
-| `checkpoints`, `writes` | LangGraph `AsyncSqliteSaver` after every node | resume, `--thread`, the delete confirmation | Managed by LangGraph; keyed by `thread_id`. The pending `interrupt()` lives here, and so does `last_turn_id` (below). |
+| `checkpoints`, `writes` | LangGraph `AsyncSqliteSaver` after every node | resume, `--thread`, the delete confirmation | Managed by LangGraph in its own file, `ria-checkpoints.db` (`Settings.checkpoint_db_path`); keyed by `thread_id`. The pending `interrupt()` lives here, and so does `last_turn_id` (below). A shared file deadlocked: the checkpointer's thread held the write lock while waiting for the event loop, which a blocking app write was occupying. |
 
 Identifiers that tie the store together: `user_id` (who), `thread_id` (which conversation),
 `turn_id` (which question). A saved report carries both `user_id` and `thread_id`, which is how

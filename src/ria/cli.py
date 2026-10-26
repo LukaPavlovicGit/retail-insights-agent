@@ -135,7 +135,7 @@ def chat(user: str = typer.Option(..., "--user", "-u", help="Demo user id from d
     if not settings.gemini_api_key:
         console.print("[red]GEMINI_API_KEY is not set (see .env.example).[/red]")
         raise typer.Exit(1)
-    if TrioStore(conn).missing_embeddings():
+    if any(t.status == "promoted" for t in TrioStore(conn).missing_embeddings()):  # pending candidates are not retrievable anyway
         console.print("[yellow]Golden Trios are not embedded yet; run `ria init`.[/yellow]")
 
     async def main() -> None:
@@ -160,7 +160,7 @@ def chat(user: str = typer.Option(..., "--user", "-u", help="Demo user id from d
         def status_fn(text: str) -> None:
             console.print(text, style="dim", markup=False)
 
-        async with open_mcp_toolbox(settings) as toolbox, AsyncSqliteSaver.from_conn_string(str(settings.db_path)) as cp:
+        async with open_mcp_toolbox(settings) as toolbox, AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db_path)) as cp:
             deps = Deps.live(settings, conn, toolbox)
             graph = build_graph(deps, cp)
             await chat_loop(graph, u, thread_id, prompt_fn, print_fn, status_fn=status_fn)
