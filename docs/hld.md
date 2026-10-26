@@ -86,7 +86,7 @@ How the prototype maps onto this picture:
 | Agent service on Cloud Run | One local process: `src/ria/cli.py` builds the graph in `src/ria/graph/build.py` |
 | Tool service, MCP over HTTP | `src/ria/mcp_server/server.py`, a FastMCP server the CLI spawns as a stdio subprocess (`src/ria/tools.py`) |
 | BigQuery with authorized views | Direct read of the public dataset; scope enforced by SQL rewrite in `src/ria/guards/sql_guard.py` |
-| Cloud SQL Postgres | One SQLite file, `ria.db` (`src/ria/db.py`), plus LangGraph's SQLite checkpointer |
+| Cloud SQL Postgres | Two SQLite files: `ria.db` (`src/ria/db.py`) and `ria-checkpoints.db` for LangGraph's SQLite checkpointer |
 | Vertex AI Vector Search | sqlite-vec `vec0` table `trio_vec` in the same SQLite file |
 | GCS bucket of Trios, persona and org defaults | `data/golden_trios/*.yaml`, `data/persona.md` and `data/org_defaults.yaml` |
 | Vertex AI Gemini | Gemini API (AI Studio key) through `langchain-google-genai` and `google-genai` |

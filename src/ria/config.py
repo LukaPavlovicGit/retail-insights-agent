@@ -85,6 +85,13 @@ class Settings:
     def org_defaults_path(self) -> Path:
         return self.data_dir / "org_defaults.yaml"
 
+    @property
+    def checkpoint_db_path(self) -> Path:
+        """LangGraph's checkpointer gets its own file. On a shared file its aiosqlite thread holds the write lock
+        while waiting for the event loop to run its commit, and a blocking app write on that loop deadlocks until
+        the busy timeout ("database is locked")."""
+        return self.db_path.with_name(f"{self.db_path.stem}-checkpoints.db")
+
 
 _STATUSES = ("Complete", "Shipped", "Processing", "Cancelled", "Returned")
 

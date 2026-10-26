@@ -86,6 +86,9 @@ async def test_preference_then_table_render(conn, settings):
     assert "Format: table" in r1.rendered
     r2 = await run_turn(app, ALICE, "t1", "which category leads?")
     assert "| category | revenue |" in r2.rendered
+    # the second turn's trace lists only its own nodes, not the first turn's as well
+    nodes = [n["node"] for n in deps.trace_store.get(r2.turn_id).node_timings]
+    assert nodes.count("begin_turn") == 1 and nodes[0] == "begin_turn" and "generate_sql" in nodes
 
 
 async def test_save_then_delete_with_confirmation_survives_restart(conn, settings, tmp_path):
@@ -200,3 +203,19 @@ async def test_correction_marks_previous_turn(conn, settings):
     await run_turn(app, ALICE, "t1", "which category leads?", new_turn_id=lambda: "c1")
     await run_turn(app, ALICE, "t1", "no, I meant by brand", new_turn_id=lambda: "c2")
     assert deps.trace_store.get("c1").corrected and not deps.trace_store.get("c2").corrected
+
+
+async def test_app_db_and_checkpointer_on_their_own_files_never_lock(settings):
+    """Regression for a live-run failure: with the checkpointer on the app's sqlite file, `write_trace` (a blocking
+    write on the event loop thread) waited for a write lock held by the checkpointer's aiosqlite thread, whose commit
+    needed the blocked loop. After the 5 s busy timeout every such turn ended `OperationalError: database is locked`
+    (25 of 40 command turns in the reproduction). Separate files remove the shared lock."""
+    from ria import db
+    conn = db.connect(settings.db_path)
+    db.init_schema(conn, settings.embedding_dim)
+    deps = make_deps(conn, settings)
+    async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db_path)) as cp:
+        app = build_graph(deps, cp)
+        for _ in range(40):
+            assert (await run_turn(app, ALICE, "t1", "/help")).outcome == "help"
+    conn.close()

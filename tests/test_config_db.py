@@ -23,6 +23,12 @@ def test_settings_defaults():
     assert not hasattr(s, "min_group_size") and not hasattr(s, "definitions_path")
 
 
+def test_checkpoint_db_is_a_separate_file_next_to_the_app_db():
+    """The LangGraph checkpointer must not share a file with the app connection (see the integration test on deadlocks)."""
+    s = Settings(db_path=Path("/x/ria.db"))
+    assert s.checkpoint_db_path == Path("/x/ria-checkpoints.db") and s.checkpoint_db_path != s.db_path
+
+
 def test_org_defaults_load_and_fallback(tmp_path):
     assert OrgDefaults.load(tmp_path / "missing.yaml") == OrgDefaults()
     f = tmp_path / "org_defaults.yaml"

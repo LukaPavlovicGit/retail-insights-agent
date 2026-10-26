@@ -49,6 +49,7 @@ uv run ria chat --user alice    # or bob, carol (CEO, unrestricted)
 - `ria init` loads the demo users and the 15 seed Golden Trios into `ria.db`, embeds the
   Trio questions, caches the live BigQuery schema in `data/schema.json`, and checks that the
   brands in `data/users.yaml` exist in the dataset. Run it again after promoting a Trio.
+  Conversation state (LangGraph checkpoints) lives in a second file, `ria-checkpoints.db`.
 - Demo users: `alice` (VP Denim and Workwear: Levi's, Carhartt, Dockers, Wrangler), `bob`
   (VP Outdoor and Swim: Columbia, Volcom, Quiksilver, Speedo), `carol` (CEO, all brands).
 - `ria chat --thread <id>` resumes an earlier conversation; the thread id is printed when a
@@ -82,7 +83,9 @@ Start `uv run ria chat --user alice` and type these in order:
 3. `Why is the gap so large?`
    Follow-up that uses the conversation so far.
 4. `How did Calvin Klein sell last month?`
-   Calvin Klein is not one of Alice's brands, so the answer is the scoped no-data message.
+   Calvin Klein is not one of Alice's brands. The guard keeps the query inside her scope,
+   so the answer is either the scoped no-data message or, if the repair step widened the
+   query, an answer about her own brands that says Calvin Klein is outside her scope.
 5. `Save this as a report.`
    Saves the last analysis and queues it as a Golden Trio candidate.
 6. `Use tables from now on.`
@@ -199,7 +202,8 @@ OpsFleet answered the clarification questions after the first version. Details a
 | Persona changes and QA? | Must pass an automated gate, no manual approval | `ria persona check` and `ria persona publish` |
 
 Open items: who approves Golden Trio candidates, and who scores the gold set (the evaluation
-questions with expected answers).
+questions with expected answers). One design follow-up from the live run: whether an empty
+result should be repaired at all, or end the turn as `no_data` at once (see "Example run").
 
 ## Repository layout
 
@@ -254,7 +258,81 @@ tests/                  pytest suite, offline
 
 ## Example run
 
-The demo script above produces, in order: a schema answer with no query; a scoped analysis
-with the trace line; a follow-up that uses the conversation; a scoped no-data message that
-names Alice's brands; a saved report and a Trio candidate; a stored table preference; and a
-delete with confirmation. A full transcript is added here after the live run.
+The demo script above, captured on 2026-10-26 with `gemini-3.5-flash-lite` as the primary
+model (the default primary was out of free-tier quota that day). Long answers are shortened
+where marked; everything else is verbatim.
+
+```
+Chatting as Alice Chen (VP Denim and Workwear). Thread demo-readme. Ctrl-D to exit. Type /help for commands.
+
+you> What data do we have and what can I ask about?
+We have the `bigquery-public-data.thelook_ecommerce` dataset, which contains five interconnected tables covering orders, order items, products, and users.
+
+The `orders` table tracks the lifecycle of customer orders (such as status, dates, and item counts), while the `order_items` table details every individual item sold, including its sale price. The `products` table acts as our catalog, containing costs and retail prices that allow us to calculate margins, along with categories, brands, and departments. The `users` table provides customer demographics like age, location, and traffic source, though personal customer details such as names, email addresses, and specific coordinates are not available.
+
+These tables connect through shared identifiers: `order_items` joins to `orders` via `order_id`, to `products` via `product_id`, and to `users` via `user_id`.
+
+You can ask questions such as:
+1. Which product categories generated the highest revenue and profit margins last quarter?
+2. What are the top traffic sources for our most valuable customer demographics by state?
+3. How do return rates vary across different product brands and departments?
+[turn f4b13606b84d · ok]
+
+you> Compare revenue of Levi's and Carhartt over the last 12 months.
+Carhartt outperforms Levi's in both total sales and margin rate over the last 12 months, where revenue is defined as the sum of order_items.sale_price for items with status Complete, Shipped, or Processing.
+
+Carhartt generated $56,000 in revenue across 818 units sold, achieving a strong margin rate of 53.5%.
+
+Levi's brought in $25,000 in revenue across 473 units sold, with a slightly lower margin rate of 50.0%.
+
+Carhartt's higher volume and better margin make it the primary revenue driver between the two brands in your portfolio.
+
+Action: Merchandising: Review Levi's pricing and promotional terms to close the margin and volume gap with Carhartt.
+[turn ac34ce104943 · ok]
+
+you> Why is the gap so large?
+Carhartt's revenue lead over Levi's is driven primarily by dominance in higher-priced Outerwear & Coats, where revenue is defined as the sum of `order_items.sale_price` for completed, shipped, or processing items over the last 12 months.
+
+Carhartt sold 276 units of Outerwear & Coats at an average price of $124.13, generating $34,000 in revenue alone—more than Levi's total brand revenue.
+
+Levi's volume is concentrated in lower-priced Jeans, selling 298 units at an average price of $47.29 for $14,000 in revenue.
+[... two more paragraphs on secondary categories and margins ...]
+Action: Merchandising: Expand the high-end outerwear assortment for Levi's to capture higher average sale prices.
+Action: Merchandising: Investigate the drivers behind Levi's low unit volume in categories outside of core jeans.
+[turn 9d10cb24ff94 · ok]
+
+you> How did Calvin Klein sell last month?
+Calvin Klein is outside your scope, as you only manage Levi's, Carhartt, Dockers, and Wrangler.
+
+The available brands generated $241,000 in total revenue across all categories, where revenue is defined as the sum of order_items.sale_price for items with status Complete, Shipped, or Processing.
+[... per-brand paragraphs for Carhartt, Levi's, Wrangler and Dockers ...]
+[turn 91bd7d68ccec · ok]
+
+you> Save this as a report.
+Saved report #3: Monthly Brand Revenue and Sales Performance. It is also queued as a Golden Trio candidate for analyst review (`ria golden list`).
+[turn cd2865c24e56 · saved]
+
+you> Use tables from now on.
+Noted. From now on: Format: table. Depth: standard. Charts: no.
+[turn e171b02f147f · ok]
+
+you> Delete the reports from this conversation.
+This will permanently delete 1 report(s):
+
+- #3  Monthly Brand Revenue and Sales Performance  (2026-10-26T15:51:27+00:00)
+
+Type 'yes' to confirm, anything else to cancel.
+
+confirm> yes
+Deleted 1 report: Monthly Brand Revenue and Sales Performance.
+[turn 7afbb6503770 · deleted]
+```
+
+Two things to notice. The schema answer says "five" tables where there are four: a model slip
+on a cached-schema answer with no query behind it. The Calvin Klein turn shows the limit of
+the "repair once on an empty result" rule: the first query filtered on Calvin Klein inside
+Alice's scope and returned nothing, and the repair widened it to all of her brands and
+dropped the month, so the answer is about a different question than the one asked. The
+eval case `scoped-outside` expects `no_data` for exactly this question and would flag it.
+Changing the rule (no repair when the empty result comes from a user-named value outside
+the scope, or no repair on empty results at all) is a listed follow-up.

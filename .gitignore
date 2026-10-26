@@ -4,6 +4,8 @@ __pycache__/
 .env
 ria.db
 ria.db-*
+ria-checkpoints.db
+ria-checkpoints.db-*
 traces.jsonl
 data/schema.json
 data/persona_versions/
