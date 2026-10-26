@@ -26,6 +26,15 @@ async def test_timed_records_timing_and_converts_llm_errors():
     assert err["outcome"] == "error" and "LLMUnavailable" in err["error"]
 
 
+async def test_timed_keeps_a_reset_from_the_node():
+    """begin_turn returns node_timings=[] to start a fresh turn; the wrapper must build on that, not on the old list."""
+    async def reset(state):
+        return {"node_timings": []}
+
+    out = await timed("begin_turn", reset)({"node_timings": [{"node": "old", "ms": 1}]})
+    assert [n["node"] for n in out["node_timings"]] == ["begin_turn"]
+
+
 async def test_call_llm_enforces_budget(conn, settings):
     deps = make_deps(conn, settings)
     state = turn_state("q", llm_calls=[{} for _ in range(settings.max_llm_calls_per_turn)])

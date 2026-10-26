@@ -86,6 +86,9 @@ async def test_preference_then_table_render(conn, settings):
     assert "Format: table" in r1.rendered
     r2 = await run_turn(app, ALICE, "t1", "which category leads?")
     assert "| category | revenue |" in r2.rendered
+    # the second turn's trace lists only its own nodes, not the first turn's as well
+    nodes = [n["node"] for n in deps.trace_store.get(r2.turn_id).node_timings]
+    assert nodes.count("begin_turn") == 1 and nodes[0] == "begin_turn" and "generate_sql" in nodes
 
 
 async def test_save_then_delete_with_confirmation_survives_restart(conn, settings, tmp_path):

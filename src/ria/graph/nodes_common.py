@@ -35,7 +35,9 @@ def timed(name: str, fn: Node, clock=time.perf_counter) -> Node:
         except (LLMUnavailable, BudgetExceeded, OrgDefaultsInvalid) as e:
             out = {"error": f"{type(e).__name__}: {e}", "outcome": "error"}
         out = dict(out or {})
-        out["node_timings"] = list(state.get("node_timings", [])) + [{"node": name, "ms": int((clock() - t0) * 1000)}]
+        # begin_turn returns node_timings=[] to reset the list for a new turn; build on that, not on the previous turn's list
+        base = out["node_timings"] if "node_timings" in out else state.get("node_timings", [])
+        out["node_timings"] = list(base) + [{"node": name, "ms": int((clock() - t0) * 1000)}]
         return out
 
     wrapped.__name__ = name
