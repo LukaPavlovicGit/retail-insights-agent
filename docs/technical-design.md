@@ -373,9 +373,11 @@ The production items below use them.
 - **Embedding failure.** The `retrieve_trios` node catches any exception from the embedding
   call, continues the turn without examples, and records `retrieval:failed:<type>` in the
   trace's guard events.
-- **Empty results.** The first empty result triggers one repair (the model often filters too
-  strictly; the repair prompt says to loosen filters). A second empty result ends the turn
-  with outcome `no_data`, a message that names the user's brands, and the last SQL.
+- **Empty results.** Zero rows is an answer, not an error: the turn ends at once with
+  outcome `no_data`, a message that names the user's brands, and the SQL that ran. The
+  earlier rule (one repair with a "loosen the filters" hint) was dropped after the live run
+  on 2026-10-26, where the repair removed a brand the user named and the month, and the
+  agent answered a different question. The user widens the question, not the model.
 - **BigQuery limits** (`mcp_server/bigquery.py`, `BigQueryRunner`). Dry run before every
   query; reject above 1 GB (`RIA_BQ_MAX_BYTES`); `maximum_bytes_billed` set on the real
   query as a second cap; 60 s timeout; at most 200 rows fetched.
@@ -735,7 +737,7 @@ Any node that raises LLMUnavailable, BudgetExceeded or OrgDefaultsInvalid routes
 | BigQuery syntax error | `classify_error` = `syntax` | Repair; breaker not touched | Answer after repair, or give-up | `mean_repairs` |
 | BigQuery timeout, quota, unknown | `classify_error` | Repair; counts toward the breaker | Answer after repair, or give-up | `mean_repairs`, `error_rate` |
 | Warehouse down | Breaker open after 3 failures, 5 min cooldown | End turn with `circuit_open`, no query sent | "The data warehouse is not responding right now... Saved reports and the schema overview still work." (`/reports`, `/report <id>`, `/schema`) | outcome `error`, `outage_turns` |
-| Empty result | Zero rows | One repair with a loosen-filters hint; second empty ends the turn | "The query ran but returned no rows. Your access covers ..." plus the SQL | outcome `no_data` |
+| Empty result | Zero rows | No repair; the turn ends at once | "The query ran but returned no rows. Your access covers ..." plus the SQL | outcome `no_data` |
 | Repair budget spent | 2 repairs used | `give_up` | "I couldn't get a working query for this after 3 attempts. What I tried: ..." | outcome `gave_up` |
 | PII-shaped text in the answer | `mask_pii` regex | Replaced with `[email]`, `[phone]`, `[address]` | Masked answer | not yet recorded |
 | Embedding API failure | Exception in `retrieve_trios` | Turn continues with no examples | Normal answer | guard event `retrieval:failed:<type>` |

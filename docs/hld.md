@@ -125,7 +125,7 @@ sequenceDiagram
   M->>B: query (maximum_bytes_billed, 60 s timeout)
   B-->>M: rows (capped at 200)
   M-->>G: rows or classified error
-  alt guard rejection, query error or empty result (max 2 repairs)
+  alt guard rejection or query error (max 2 repairs; an empty result ends the turn as no_data)
     G->>L: repair_sql with full attempt history
     G->>G: guard_sql again
     G->>M: bq_dry_run, then bq_query

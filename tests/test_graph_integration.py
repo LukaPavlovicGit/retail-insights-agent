@@ -48,6 +48,20 @@ async def test_invalid_org_defaults_goes_through_error_path(conn, settings):
     assert deps.trace_store.get("turn-od") is not None
 
 
+async def test_empty_result_ends_as_no_data_without_a_repair(conn, settings):
+    """Live run 2026-10-26: 'How did Calvin Klein sell last month?' (outside Alice's scope) returned no rows and the
+    one repair dropped the brand and the month, answering a different question. An empty result is now final."""
+    empty = {"ok": True, "rows": [], "row_count": 0, "bytes": 5, "error": None, "error_kind": None}
+    tb = FakeToolBox({"bq_query": [empty, OK_QUERY]})
+    app, deps = app_for(conn, settings, {"router": [ANALYSIS], "generate_sql": [SqlPlan(sql=GOOD_SQL), SqlPlan(sql=GOOD_SQL)],
+                                         "analyze": ["should not run"]}, tb)
+    r = await run_turn(app, ALICE, "t1", "how did Calvin Klein sell last month?", new_turn_id=lambda: "e1")
+    assert r.outcome == "no_data" and "returned no rows" in r.rendered and "Levi's, Carhartt, Dockers, Wrangler" in r.rendered
+    t = deps.trace_store.get("e1")
+    assert t.repairs == 0 and len(t.sql_attempts) == 1 and [c["node"] for c in t.llm_calls] == ["router", "generate_sql"]
+    assert len([c for c in tb.calls if c[0] == "bq_query"]) == 1
+
+
 async def test_repair_loop_recovers(conn, settings):
     tb = FakeToolBox({"bq_query": [BAD_QUERY, OK_QUERY]})
     app, deps = app_for(conn, settings, {"router": [ANALYSIS], "generate_sql": [SqlPlan(sql=GOOD_SQL)], "repair_sql": [SqlPlan(sql=GOOD_SQL)], "analyze": ["Fixed."]}, tb)

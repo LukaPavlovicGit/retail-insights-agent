@@ -23,8 +23,9 @@ from ria.graph.prompts import (
 from ria.guards.sql_guard import guard_sql
 from ria.llm.client import strip_fences
 
-# Errors where another LLM rewrite cannot help (data source down, query too big): go straight to give_up.
-TERMINAL_KINDS = {"circuit_open", "bytes_cap"}
+# Kinds where another LLM rewrite must not be tried: data source down, query too big, and an empty result (zero rows
+# is an answer; a "loosen the filters" repair silently changes the question). All go straight to give_up.
+TERMINAL_KINDS = {"circuit_open", "bytes_cap", "empty"}
 
 
 class SqlPlan(BaseModel):
@@ -129,8 +130,8 @@ def make_guard_sql(deps: Deps):
 
 def make_execute_sql(deps: Deps):
     """Node `execute_sql`: runs the guarded `sql` with `bq_query` and writes `result_rows`, `result_bytes` and a
-    `sql_attempts` entry. A query that succeeds but returns zero rows is recorded as kind "empty" so it can be
-    repaired once (filters may be too strict) rather than analysed. No LLM call. Next node is chosen by `route_after_execute`."""
+    `sql_attempts` entry. A query that succeeds but returns zero rows is recorded as kind "empty" and ends the turn as
+    `no_data` (never repaired, never analysed). No LLM call. Next node is chosen by `route_after_execute`."""
     async def execute_sql(state: dict) -> dict:
         sql = state["sql"]
         attempts = list(state.get("sql_attempts", []))
@@ -169,8 +170,9 @@ def route_after_guard(state: dict, max_repairs: int = 2) -> str:
 
 
 def route_after_execute(state: dict, max_repairs: int = 2) -> str:
-    """Edge after `execute_sql`: error set -> fail; success -> analyze; terminal kind -> give_up; a second "empty"
-    result -> give_up (an empty answer gets one retry only); any other error -> repair_sql while budget lasts, else give_up."""
+    """Edge after `execute_sql`: error set -> fail; success -> analyze; terminal kind (including "empty": zero rows
+    is an answer, and a repair would change the question) -> give_up; any other error -> repair_sql while budget
+    lasts, else give_up."""
     if state.get("error"):
         return "fail"
     kind = state.get("sql_error_kind")
@@ -178,10 +180,6 @@ def route_after_execute(state: dict, max_repairs: int = 2) -> str:
         return "analyze"
     if kind in TERMINAL_KINDS:
         return "give_up"
-    if kind == "empty":
-        empties = sum(1 for a in state.get("sql_attempts", []) if a.get("kind") == "empty")
-        if empties > 1:
-            return "give_up"
     return "repair_sql" if _can_repair(state, max_repairs) else "give_up"
 
 

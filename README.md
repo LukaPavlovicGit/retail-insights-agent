@@ -84,8 +84,8 @@ Start `uv run ria chat --user alice` and type these in order:
    Follow-up that uses the conversation so far.
 4. `How did Calvin Klein sell last month?`
    Calvin Klein is not one of Alice's brands. The guard keeps the query inside her scope,
-   so the answer is either the scoped no-data message or, if the repair step widened the
-   query, an answer about her own brands that says Calvin Klein is outside her scope.
+   the query returns no rows, and the turn ends with the no-data message that names her
+   brands and shows the SQL. No repair is attempted on an empty result.
 5. `Save this as a report.`
    Saves the last analysis and queues it as a Golden Trio candidate.
 6. `Use tables from now on.`
@@ -202,8 +202,7 @@ OpsFleet answered the clarification questions after the first version. Details a
 | Persona changes and QA? | Must pass an automated gate, no manual approval | `ria persona check` and `ria persona publish` |
 
 Open items: who approves Golden Trio candidates, and who scores the gold set (the evaluation
-questions with expected answers). One design follow-up from the live run: whether an empty
-result should be repaired at all, or end the turn as `no_data` at once (see "Example run").
+questions with expected answers).
 
 ## Repository layout
 
@@ -329,10 +328,10 @@ Deleted 1 report: Monthly Brand Revenue and Sales Performance.
 ```
 
 Two things to notice. The schema answer says "five" tables where there are four: a model slip
-on a cached-schema answer with no query behind it. The Calvin Klein turn shows the limit of
-the "repair once on an empty result" rule: the first query filtered on Calvin Klein inside
-Alice's scope and returned nothing, and the repair widened it to all of her brands and
-dropped the month, so the answer is about a different question than the one asked. The
-eval case `scoped-outside` expects `no_data` for exactly this question and would flag it.
-Changing the rule (no repair when the empty result comes from a user-named value outside
-the scope, or no repair on empty results at all) is a listed follow-up.
+on a cached-schema answer with no query behind it. The Calvin Klein turn shows why the
+"repair once on an empty result" rule was removed the next day: the first query filtered on
+Calvin Klein inside Alice's scope and returned nothing, and the repair widened it to all of
+her brands and dropped the month, so the answer is about a different question than the one
+asked. The eval case `scoped-outside` expects `no_data` for exactly this question. Since
+then an empty result ends the turn at once with the scoped no-data message and the SQL that
+ran; step 4 above now produces that message.

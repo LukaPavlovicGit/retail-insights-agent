@@ -93,7 +93,7 @@ Previous attempts, oldest first:
 {history}
 
 Rules: same as before. If the error says a column could not be resolved, use only columns from the schema.
-If the result was empty, loosen filters that may be too strict (status values, date ranges, exact name matches: use LIKE with wildcards) while keeping the question's meaning.
+Never drop or widen a filter the user asked for (a named brand, product, place or time period).
 Return a one-sentence plan and the corrected SQL."""
 
 ANALYZE_SYSTEM = """{persona}

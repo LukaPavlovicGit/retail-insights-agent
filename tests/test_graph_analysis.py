@@ -90,8 +90,9 @@ async def test_execute_sql_success_empty_and_circuit(conn, settings):
     node = make_execute_sql(deps)
     ok = await node(turn_state("q", sql="SELECT 1"))
     assert ok["result_rows"] == ROWS and ok["result_bytes"] == 99 and route_after_execute(ok) == "analyze"
+    # an empty result is an answer, never repaired: a repair would change the question (live run 2026-10-26)
     empty1 = await node(turn_state("q", sql="SELECT 1"))
-    assert empty1["sql_error_kind"] == "empty" and route_after_execute(empty1) == "repair_sql"
+    assert empty1["sql_error_kind"] == "empty" and route_after_execute(empty1) == "give_up"
     empty2 = await node(turn_state("q", sql="SELECT 1", sql_attempts=empty1["sql_attempts"]))
     assert route_after_execute(empty2) == "give_up"
     down = await node(turn_state("q", sql="SELECT 1"))
